@@ -172,7 +172,7 @@ const templates = {
           <div class="stats">
             <div class="stat"><div class="stat-num" id="diag-latency">—</div><div class="stat-label">平均延迟</div></div>
             <div class="stat"><div class="stat-num" id="diag-uptime">—</div><div class="stat-label">可用率</div></div>
-            <div class="stat"><div class="stat-num">串行</div><div class="stat-label">执行模式</div></div>
+            <div class="stat"><div class="stat-num" id="exec-mode-stat">串行</div><div class="stat-label">执行模式</div></div>
           </div>
           <div class="terminal">
             <div class="term-dots"><i></i><i></i><i></i></div>
@@ -485,7 +485,7 @@ const platformTitles = {
 const platformSubtitles = {
   config: '配置大模型通信协议、鉴权密钥与推理参数 · 配置与密钥仅保存在本机',
   import: '粘贴或上传 Excel，按平台分类后回填',
-  all: '串行评论全部平台，评论完自动检测',
+  all: '评论全部平台（可开多平台并行），评论完自动检测',
   detect: '回查我的评论数 / 点赞 / 收藏，达标自动留痕',
   zhihu: '专栏文章：点赞、喜欢、收藏后发布评论',
   toutiao: '文章：点赞、收藏后在评论抽屉发布',
@@ -605,6 +605,7 @@ function renderContent(platform) {
   if (platform === 'import') renderImportResult();
   if (platform === 'detect') { updateDetectClassify(); renderDetectionTable(); }
   if (platform === 'all') { paintAllRows(); loadParallelPref(); }
+  if (platform === 'config') updateExecModeStat();
   applyRunState();
 }
 
@@ -1361,6 +1362,18 @@ function onParallelToggle() {
   if (wrap) wrap.style.display = (cb && cb.checked) ? '' : 'none';
   saveParallelPref();
   updateParallelHint();
+  updateExecModeStat();
+}
+
+// 配置页「执行模式」小卡跟随并行设置。
+// 读 localStorage 而不是读开关 DOM —— 切到配置页时「一键运行」页是游离的，
+// 从那里取不到 #all-parallel / #all-parallel-lanes。
+function updateExecModeStat() {
+  const el = document.getElementById('exec-mode-stat');
+  if (!el) return;
+  let pref = null;
+  try { pref = JSON.parse(localStorage.getItem(PARALLEL_PREF_KEY) || 'null'); } catch (e) { pref = null; }
+  el.textContent = (pref && pref.enabled) ? ('并行 ×' + (Number(pref.lanes) || 3)) : '串行';
 }
 
 function updateParallelHint() {
