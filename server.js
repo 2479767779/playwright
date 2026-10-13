@@ -7,8 +7,8 @@ const fs = require('fs');
 const { fork, execFile } = require('child_process');
 const logger = require('./logger'); // 统一日志：控制台 + 落盘到 logs/ 目录
 const { probeConnection } = require('./aiComment'); // 连通性探测（与评论脚本同一套协议实现）
-// 平台顺序常量 + 「按通道定位 runner」的纯逻辑（抽出去是为了能单测）
-const { PLATFORM_ORDER, resolveRunner } = require('./runner-registry');
+// 平台顺序常量 + runner 原语（createRunner / runPool）+ 「按通道定位 runner」的纯逻辑
+const { PLATFORM_ORDER, resolveRunner, createRunner, runPool } = require('./runner-registry');
 
 // 可写工作目录：打包后由主进程透传 APP_USER_DATA（用户数据目录）；开发模式兜底用 __dirname
 const WORK_DIR = process.env.APP_USER_DATA ? path.join(process.env.APP_USER_DATA, 'runtime') : __dirname;
@@ -83,43 +83,10 @@ function globalSequenceRunning() {
 }
 
 // ====================== runner / fork 工具 ======================
-// runner 统一管理一个流程（单平台 = 评论→检测；一键 = 评论全部→检测全部），
-// 持有当前子进程引用，支持取消（kill 当前子进程 + 置取消标志，序列里逐步退出）。
-function createRunner() {
-  const runner = { currentChild: null, cancelled: false, paused: false };
-  runner.cancel = () => {
-    runner.cancelled = true;
-    if (runner.currentChild && runner.currentChild.connected) {
-      try { runner.currentChild.send({ cmd: 'cancel' }); } catch (e) { /* ignore */ }
-      // 等 3 秒让子进程发送已完成的结果，再强杀
-      setTimeout(() => {
-        if (runner.currentChild) {
-          try { runner.currentChild.kill(); } catch (e) { /* ignore */ }
-        }
-      }, 3000);
-    } else if (runner.currentChild) {
-      try { runner.currentChild.kill(); } catch (e) { /* ignore */ }
-    }
-  };
-  // 暂停/继续：通过 ipc 给评论脚本发消息，脚本在下一个检查点阻塞/放行（不重启、不丢进度）
-  // 返回布尔值表示「是否真的下发了」：阶段切换的瞬间 currentChild 可能为空，
-  // 此时返回 false，让调用方如实报错，而不是让界面假装已暂停（但实际还在跑）。
-  runner.pause = () => {
-    const c = runner.currentChild;
-    if (!c || typeof c.send !== 'function' || !c.connected) return false;
-    runner.paused = true;
-    try { c.send({ cmd: 'pause' }); } catch (e) { return false; }
-    return true;
-  };
-  runner.resume = () => {
-    const c = runner.currentChild;
-    if (!c || typeof c.send !== 'function' || !c.connected) return false;
-    runner.paused = false;
-    try { c.send({ cmd: 'resume' }); } catch (e) { return false; }
-    return true;
-  };
-  return runner;
-}
+// runner 原语（createRunner / runPool）+ 「按通道定位 runner」的纯逻辑见 runner-registry.js。
+// 抽成独立模块是为了能单测 —— server.js 一旦被 require 就会启动 HTTP 服务。
+// 那里面详细说明了：为什么子进程要用 Map 而不是单个引用（多平台并行），
+// 以及为什么平台通道不能退化成「取 runningProcesses 的第一个」。
 
 // 「按通道定位 runner」的纯逻辑见 runner-registry.js（已从顶部引入），
 // 那里的注释详细说明了为什么平台通道不能退化成「取 runningProcesses 的第一个」。
@@ -244,9 +211,9 @@ async function runCommentPhase(runner, platform, urls, commentCount) {
     logger.child(platform, line, type);
     io.emit('log', { platform, log: line, type });
   });
-  runner.currentChild = child;
+  runner.setChild(platform, child);
   const code = await done;
-  runner.currentChild = null;
+  runner.setChild(platform, null);
 
   try { fs.unlinkSync(tempScriptPath); } catch (e) { /* ignore */ }
   logger[code === 0 ? 'info' : 'error'](`[${platform}] 评论阶段结束，退出码: ${code}`);
@@ -292,9 +259,9 @@ async function runDetectPhase(runner, platform, urls, options = {}) {
       } catch (e) { /* ignore */ }
     }
   });
-  runner.currentChild = child;
+  runner.setChild(platform, child);
   const code = await done;
-  runner.currentChild = null;
+  runner.setChild(platform, null);
 
   logger.info(`[${platform}] 检测阶段结束，退出码: ${code}`);
   return results;
@@ -310,7 +277,7 @@ function startPlatformSequence(platform, urls, commentCount, enableDetection) {
   (async () => {
     try {
       await runCommentPhase(runner, platform, urls, commentCount);
-      if (runner.cancelled) return;
+      if (runner.isCancelled(platform)) return;
       if (enableDetection) {
         if (DETECT_PLATFORMS.includes(platform)) {
           await runDetectPhase(runner, platform, urls);
@@ -328,37 +295,67 @@ function startPlatformSequence(platform, urls, commentCount, enableDetection) {
   })();
 }
 
-// 一键运行：评论全部（串行）→ 检测全部（串行）
-function startAllSequence(tasks, commentCount, enableDetection) {
+// 并发池回收到的失败逐个上报到对应平台的日志与进度行
+// （并行时一个平台失败不影响其他平台，所以只标红它自己那一行）
+function reportPoolErrors(errors, phase) {
+  const phaseLabel = phase === 'comment' ? '评论' : '检测';
+  for (const e of errors || []) {
+    const platform = (e.item && e.item.platform) || 'all';
+    const msg = (e.error && e.error.message) || String(e.error);
+    logger.error(`[${platform}] ${phaseLabel}阶段异常: ${msg}`);
+    io.emit('log', { platform, log: `${phaseLabel}阶段异常：${msg}`, type: 'error' });
+    // 该平台此前的「完成」是 finally 先发的，这里覆盖成失败
+    io.emit('all-progress', { phase, platform, status: 'error' });
+  }
+}
+
+// 一键运行：评论全部 → 检测全部。
+// concurrency=1 即原串行行为；>1 时用并发池同时跑多个平台（「多平台并行」）。
+// 并行时每个平台会单独 emit status，因此平台页也能显示「运行中」并单独暂停。
+function startAllSequence(tasks, commentCount, enableDetection, concurrency) {
   allRunner = createRunner();
+  const lanes = Math.max(1, Math.floor(concurrency) || 1);
   io.emit('status', { platform: 'all', status: 'running' });
+  logger.info(`[all] 启动：${tasks.length} 个平台，并发度 ${lanes}${lanes > 1 ? '（多平台并行）' : ''}`);
   const total = tasks.length;
 
   (async () => {
     try {
-      // ---- 评论阶段：逐平台串行 ----
-      let i = 0;
-      for (const t of tasks) {
-        if (allRunner.cancelled) break;
-        i++;
-        io.emit('all-progress', { phase: 'comment', platform: t.platform, status: 'running', index: i, total });
-        await runCommentPhase(allRunner, t.platform, t.urls, commentCount);
-        io.emit('all-progress', { phase: 'comment', platform: t.platform, status: 'done', index: i, total });
-      }
+      // ---- 评论阶段 ----
+      let started = 0;
+      const commentErrors = await runPool(tasks, lanes, async (t) => {
+        if (allRunner.isCancelled(t.platform)) return;
+        const myIndex = ++started;
+        io.emit('all-progress', { phase: 'comment', platform: t.platform, status: 'running', index: myIndex, total });
+        io.emit('status', { platform: t.platform, status: 'running' });
+        try {
+          await runCommentPhase(allRunner, t.platform, t.urls, commentCount);
+        } finally {
+          io.emit('all-progress', { phase: 'comment', platform: t.platform, status: 'done', index: myIndex, total });
+          io.emit('status', { platform: t.platform, status: 'idle' });
+        }
+      }, () => allRunner.cancelled);
+      reportPoolErrors(commentErrors, 'comment');
 
-      // ---- 检测阶段：逐平台串行 ----
+      // ---- 检测阶段 ----
       if (enableDetection && !allRunner.cancelled) {
         const detectTasks = tasks.filter((t) => DETECT_PLATFORMS.includes(t.platform));
         const dtotal = detectTasks.length;
-        let j = 0;
-        for (const t of detectTasks) {
-          if (allRunner.cancelled) break;
-          j++;
-          io.emit('all-progress', { phase: 'detect', platform: t.platform, status: 'running', index: j, total: dtotal });
-          const results = await runDetectPhase(allRunner, t.platform, t.urls);
-          io.emit('detection', { platform: t.platform, results });
-          io.emit('all-progress', { phase: 'detect', platform: t.platform, status: 'done', index: j, total: dtotal });
-        }
+        let dstarted = 0;
+        const detectErrors = await runPool(detectTasks, lanes, async (t) => {
+          if (allRunner.isCancelled(t.platform)) return;
+          const myIndex = ++dstarted;
+          io.emit('all-progress', { phase: 'detect', platform: t.platform, status: 'running', index: myIndex, total: dtotal });
+          io.emit('status', { platform: t.platform, status: 'running' });
+          try {
+            const results = await runDetectPhase(allRunner, t.platform, t.urls);
+            io.emit('detection', { platform: t.platform, results });
+          } finally {
+            io.emit('all-progress', { phase: 'detect', platform: t.platform, status: 'done', index: myIndex, total: dtotal });
+            io.emit('status', { platform: t.platform, status: 'idle' });
+          }
+        }, () => allRunner.cancelled);
+        reportPoolErrors(detectErrors, 'detect');
       }
     } catch (e) {
       logger.error(`[all] 一键运行异常: ${e.message}`);
@@ -639,11 +636,14 @@ app.post('/api/start', (req, res) => {
 // 停止单平台任务
 app.post('/api/stop', (req, res) => {
   const { platform } = req.body;
-  const runner = runningProcesses.get(platform);
+  // 用 resolveRunner 而不是只看 runningProcesses：
+  // 一键运行（含并行）期间，从平台页停止也要能只停那一个平台。
+  const runner = resolveRunner(platform, { runningProcesses, allRunner, detectRunner, fixRunner });
   if (!runner) {
-    return res.json({ success: false, error: '该平台没有运行中的任务' });
+    const isPlatform = platform && PLATFORM_ORDER.includes(platform);
+    return res.json({ success: false, error: isPlatform ? '该平台没有运行中的任务' : '没有运行中的任务' });
   }
-  runner.cancel();
+  runner.cancel(channelTarget(platform));
   logger.info(`[${platform}] 任务已被用户手动停止`);
   io.emit('log', { platform, log: '任务已被用户手动停止', type: 'info' });
   res.json({ success: true, message: '任务已停止' });
@@ -652,15 +652,37 @@ app.post('/api/stop', (req, res) => {
 // 各通道当前运行状态。前端 runStates 只存在内存里，刷新页面（F5）会被清空，
 // 于是「任务在跑但按钮显示就绪」。前端启动时拉一次这个接口即可恢复。
 // 通道：平台名 / 'all' / 'detect'；状态：running | paused | idle
+// 通道 → runner 方法的目标参数。
+// 'all' / 'detect' 代表「整条序列」，不传 platform（= 作用于全部子进程）；
+// 平台通道只作用于该平台 —— 并行时「一键运行页暂停全部、平台页暂停单个」都靠这个区分。
+function channelTarget(channel) {
+  if (channel === 'all' || channel === 'detect') return undefined;
+  return channel || undefined;
+}
+
+// 各通道当前运行状态。前端 runStates 只存在内存里，刷新页面（F5）会被清空，
+// 于是「任务在跑但按钮显示就绪」。前端启动时拉一次这个接口即可恢复。
+// 通道：平台名 / 'all' / 'detect'；状态：running | paused | idle
 app.get('/api/status', (req, res) => {
-  const stateOf = (runner) => {
+  // 整体状态：不要求此刻一定有子进程 —— 阶段切换的空档仍应算「运行中」
+  const runnerState = (runner) => {
     if (!runner || runner.cancelled) return 'idle';
     return runner.paused ? 'paused' : 'running';
   };
   const states = {};
-  PLATFORM_ORDER.forEach((p) => { states[p] = stateOf(runningProcesses.get(p)); });
-  states.all = stateOf(allRunner);
-  states.detect = stateOf(detectRunner || fixRunner);
+  PLATFORM_ORDER.forEach((p) => {
+    const own = runningProcesses.get(p);
+    if (own) { states[p] = runnerState(own); return; }
+    // 一键运行期间（含并行）：该平台此刻有子进程在跑 → 如实反映，
+    // 于是平台页也能显示「运行中」，并支持单独暂停/停止该平台。
+    if (allRunner && !allRunner.cancelled && allRunner.children.has(p)) {
+      states[p] = allRunner.isPaused(p) ? 'paused' : 'running';
+      return;
+    }
+    states[p] = 'idle';
+  });
+  states.all = runnerState(allRunner);
+  states.detect = runnerState(detectRunner || fixRunner);
   res.json({ success: true, states });
 });
 
@@ -672,10 +694,10 @@ app.post('/api/pause', (req, res) => {
     const isPlatform = channel && PLATFORM_ORDER.includes(channel);
     return res.json({ success: false, error: isPlatform ? '该平台没有运行中的任务' : '没有运行中的任务' });
   }
-  if (!runner.pause()) {
+  if (!runner.pause(channelTarget(channel))) {
     return res.json({ success: false, error: '当前阶段无法暂停（正在切换流程），请稍后重试' });
   }
-  logger.info(`[pause] 已暂停（channel=${channel || '未知'}）`);
+  logger.info(`[pause] 已暂停（channel=${channel || '全部'}）`);
   res.json({ success: true, message: '已暂停' });
 });
 
@@ -687,16 +709,16 @@ app.post('/api/resume', (req, res) => {
     const isPlatform = channel && PLATFORM_ORDER.includes(channel);
     return res.json({ success: false, error: isPlatform ? '该平台没有运行中的任务' : '没有暂停的任务' });
   }
-  if (!runner.resume()) {
+  if (!runner.resume(channelTarget(channel))) {
     return res.json({ success: false, error: '当前阶段无法继续（正在切换流程），请稍后重试' });
   }
-  logger.info(`[resume] 已继续（channel=${channel || '未知'}）`);
+  logger.info(`[resume] 已继续（channel=${channel || '全部'}）`);
   res.json({ success: true, message: '已继续' });
 });
 
 // 一键运行（全部平台串行：评论全部 → 检测全部）
 app.post('/api/start-all', (req, res) => {
-  const { tasks, commentCount, enableDetection = true } = req.body;
+  const { tasks, commentCount, enableDetection = true, concurrency = 1 } = req.body;
   // tasks: [{ platform, urls }]
   const valid = (tasks || [])
     .filter((t) => t && t.platform && Array.isArray(t.urls) && t.urls.length > 0)
@@ -709,8 +731,11 @@ app.post('/api/start-all', (req, res) => {
     return res.json({ success: false, error: '有任务正在运行，请先停止' });
   }
 
-  startAllSequence(valid, commentCount, enableDetection);
-  res.json({ success: true, message: `一键运行已启动：${valid.map((t) => t.platform).join('、')}` });
+  // 并发度夹到 [1, 平台数]；非法值一律退回串行，避免前端传错导致意外并发
+  const lanes = Math.max(1, Math.min(Math.floor(Number(concurrency)) || 1, valid.length));
+  startAllSequence(valid, commentCount, enableDetection, lanes);
+  const mode = lanes > 1 ? `多平台并行（并发 ${lanes}）` : '串行';
+  res.json({ success: true, message: `一键运行已启动：${valid.map((t) => t.platform).join('、')}（${mode}）` });
 });
 
 // 停止一键运行

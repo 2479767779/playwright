@@ -1,18 +1,41 @@
-// 回归自检：resolveRunner 必须按通道精确命中，不能退化成「取 runningProcesses 的第一个」。
+// 回归自检：runner 原语 + 「按通道定位 runner」的纯逻辑。
 //
 // 运行方式：  node tests/runner-registry.check.js
 //（不是 @playwright/test 用例 —— 本仓库没装该依赖，所以文件名故意用 .check.js，
 //  避免被 Playwright 的默认 testMatch 收集。）
 //
-// 这个检查不需要起服务、不需要跑浏览器任务，纯逻辑断言。
+// 覆盖两块：
+//   1) resolveRunner —— 必须按通道精确命中，不能退化成「取 runningProcesses 的第一个」
+//   2) createRunner / runPool —— 多平台并行的核心：多子进程、两种暂停粒度、
+//      单个平台失败不拖垮其他 lane
+// 都不需要起服务、不需要跑浏览器任务，纯逻辑断言。
 'use strict';
 const assert = require('assert');
-const { resolveRunner } = require('../runner-registry');
+const { resolveRunner, createRunner, runPool } = require('../runner-registry');
 
 let pass = 0, fail = 0;
 function ok(name, fn) {
   try { fn(); console.log('PASS ' + name); pass++; }
   catch (e) { console.log('FAIL ' + name + '  <- ' + e.message); fail++; }
+}
+// 异步用例：把 promise 收集起来，最后统一等待（否则汇总会在用例跑完前就打印了）
+const pending = [];
+function oka(name, fn) {
+  pending.push((async () => {
+    try { await fn(); console.log('PASS ' + name); pass++; }
+    catch (e) { console.log('FAIL ' + name + '  <- ' + e.message); fail++; }
+  })());
+}
+
+// 造一个假子进程：记录收到的 IPC 指令
+function fakeChild(label) {
+  return {
+    label,
+    connected: true,
+    inbox: [],
+    send(msg) { this.inbox.push(msg.cmd); },
+    kill() { this.killed = true; },
+  };
 }
 
 // 用带名字的对象当 runner 替身，方便断言「拿到的是哪一个」
@@ -90,5 +113,204 @@ ok('全都空 → null（不抛异常）', () => {
   assert.strictEqual(resolveRunner('detect', {}), null);
 });
 
-console.log('\n汇总: PASS ' + pass + ' / ' + (pass + fail));
-process.exit(fail ? 1 : 0);
+// ============================================================
+// 第二部分：createRunner / runPool（多平台并行的核心）
+// ============================================================
+
+ok('单平台：setChild 后 hasChild 为真，清空后为假', () => {
+  const r = createRunner();
+  assert.strictEqual(r.hasChild('zhihu'), false);
+  r.setChild('zhihu', fakeChild('z'));
+  assert.strictEqual(r.hasChild('zhihu'), true);
+  assert.strictEqual(r.hasChild('csdn'), false);
+  r.setChild('zhihu', null);
+  assert.strictEqual(r.hasChild('zhihu'), false);
+});
+
+ok('多平台并行：两个平台的子进程可以同时存在', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  assert.strictEqual(r.children.size, 2);
+  assert.strictEqual(r.hasChild('zhihu'), true);
+  assert.strictEqual(r.hasChild('csdn'), true);
+});
+
+ok('暂停粒度：pause(platform) 只发给该平台', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  assert.strictEqual(r.pause('zhihu'), true);
+  assert.deepStrictEqual(z.inbox, ['pause']);
+  assert.deepStrictEqual(c.inbox, []);
+  assert.strictEqual(r.isPaused('zhihu'), true);
+  assert.strictEqual(r.isPaused('csdn'), false);
+});
+
+ok('暂停粒度：pause() 不带参数发给全部', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  assert.strictEqual(r.pause(), true);
+  assert.deepStrictEqual(z.inbox, ['pause']);
+  assert.deepStrictEqual(c.inbox, ['pause']);
+  assert.strictEqual(r.paused, true);
+  assert.strictEqual(r.isPaused('zhihu'), true);
+  assert.strictEqual(r.isPaused('csdn'), true);
+});
+
+ok('继续：resume(platform) 只解开该平台，全局 paused 不受影响', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  r.pause('zhihu');
+  r.resume('zhihu');
+  assert.deepStrictEqual(z.inbox, ['pause', 'resume']);
+  assert.deepStrictEqual(c.inbox, []);
+  assert.strictEqual(r.isPaused('zhihu'), false);
+});
+
+ok('取消粒度：cancel(platform) 只取消该平台，不影响整条序列', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  assert.strictEqual(r.cancel('zhihu'), true);
+  assert.deepStrictEqual(z.inbox, ['cancel']);
+  assert.deepStrictEqual(c.inbox, []);
+  assert.strictEqual(r.isCancelled('zhihu'), true);
+  assert.strictEqual(r.isCancelled('csdn'), false);
+  assert.strictEqual(r.cancelled, false);
+});
+
+ok('取消粒度：cancel() 不带参数取消整条序列并广播', () => {
+  const r = createRunner();
+  const z = fakeChild('z'), c = fakeChild('c');
+  r.setChild('zhihu', z);
+  r.setChild('csdn', c);
+  r.cancel();
+  assert.deepStrictEqual(z.inbox, ['cancel']);
+  assert.deepStrictEqual(c.inbox, ['cancel']);
+  assert.strictEqual(r.cancelled, true);
+  assert.strictEqual(r.isCancelled('zhihu'), true);
+  assert.strictEqual(r.isCancelled('csdn'), true);
+});
+
+ok('没有子进程时 pause/resume 返回 false（调用方据此如实报错，而不是假装已暂停）', () => {
+  const r = createRunner();
+  assert.strictEqual(r.pause(), false);
+  assert.strictEqual(r.pause('zhihu'), false);
+  assert.strictEqual(r.resume('zhihu'), false);
+  assert.strictEqual(r.cancel('zhihu'), false);
+});
+
+ok('断开的子进程不算数（不会往死进程发 IPC）', () => {
+  const r = createRunner();
+  const z = fakeChild('z');
+  z.connected = false;
+  r.setChild('zhihu', z);
+  assert.strictEqual(r.hasChild('zhihu'), false);
+  assert.strictEqual(r.pause('zhihu'), false);
+  assert.deepStrictEqual(z.inbox, []);
+});
+
+ok('平台跑完清掉暂停标记（否则会残留成「永远已暂停」）', () => {
+  const r = createRunner();
+  r.setChild('zhihu', fakeChild('z'));
+  r.pause('zhihu');
+  assert.strictEqual(r.isPaused('zhihu'), true);
+  r.setChild('zhihu', null);
+  assert.strictEqual(r.isPaused('zhihu'), false);
+});
+
+ok('一个平台被单独暂停后，全局 paused 仍为 false（两者互不污染）', () => {
+  const r = createRunner();
+  r.setChild('zhihu', fakeChild('z'));
+  r.setChild('csdn', fakeChild('c'));
+  r.pause('zhihu');
+  assert.strictEqual(r.paused, false);
+  assert.strictEqual(r.children.size, 2);
+});
+
+// ---- runPool ----
+
+oka('runPool 串行（并发 1）：按顺序执行', async () => {
+  const order = [];
+  await runPool([1, 2, 3], 1, async (n) => { order.push(n); });
+  assert.deepStrictEqual(order, [1, 2, 3]);
+});
+
+oka('runPool 并发 3：同时在跑的任务数不超过 3', async () => {
+  let inFlight = 0, peak = 0;
+  const items = [1, 2, 3, 4, 5, 6];
+  await runPool(items, 3, async () => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((res) => setTimeout(res, 15));
+    inFlight--;
+  });
+  assert.strictEqual(peak, 3, '峰值并发应为 3，实际 ' + peak);
+});
+
+oka('runPool 并发数超过任务数时按任务数收敛', async () => {
+  let inFlight = 0, peak = 0;
+  await runPool([1, 2], 6, async () => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((res) => setTimeout(res, 10));
+    inFlight--;
+  });
+  assert.strictEqual(peak, 2);
+});
+
+oka('runPool 非法并发数退化为 1（不会意外并发）', async () => {
+  let inFlight = 0, peak = 0;
+  await runPool([1, 2, 3], 0, async () => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((res) => setTimeout(res, 5));
+    inFlight--;
+  });
+  assert.strictEqual(peak, 1);
+  inFlight = 0; peak = 0;
+  await runPool([1, 2, 3], NaN, async () => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((res) => setTimeout(res, 5));
+    inFlight--;
+  });
+  assert.strictEqual(peak, 1);
+});
+
+oka('runPool 单个任务抛错：其他任务照样跑完，错误被收集而不是冒泡', async () => {
+  const done = [];
+  const errors = await runPool([1, 2, 3, 4], 2, async (n) => {
+    if (n === 2) throw new Error('平台崩了');
+    await new Promise((res) => setTimeout(res, 8));
+    done.push(n);
+  });
+  assert.deepStrictEqual(done.sort(), [1, 3, 4], '其余任务应全部执行');
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors[0].item, 2);
+  assert.strictEqual(errors[0].error.message, '平台崩了');
+});
+
+oka('runPool shouldStop 为真后不再领新任务', async () => {
+  const started = [];
+  let stop = false;
+  await runPool([1, 2, 3, 4, 5, 6], 1, async (n) => {
+    started.push(n);
+    if (n === 2) stop = true;
+  }, () => stop);
+  assert.deepStrictEqual(started, [1, 2]);
+});
+
+oka('runPool 空列表不抛异常', async () => {
+  const errors = await runPool([], 3, async () => { throw new Error('不该被调用'); });
+  assert.deepStrictEqual(errors, []);
+});
+
+Promise.all(pending).then(() => {
+  console.log('\n汇总: PASS ' + pass + ' / ' + (pass + fail));
+  process.exit(fail ? 1 : 0);
+});
