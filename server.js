@@ -649,6 +649,21 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: '任务已停止' });
 });
 
+// 各通道当前运行状态。前端 runStates 只存在内存里，刷新页面（F5）会被清空，
+// 于是「任务在跑但按钮显示就绪」。前端启动时拉一次这个接口即可恢复。
+// 通道：平台名 / 'all' / 'detect'；状态：running | paused | idle
+app.get('/api/status', (req, res) => {
+  const stateOf = (runner) => {
+    if (!runner || runner.cancelled) return 'idle';
+    return runner.paused ? 'paused' : 'running';
+  };
+  const states = {};
+  PLATFORM_ORDER.forEach((p) => { states[p] = stateOf(runningProcesses.get(p)); });
+  states.all = stateOf(allRunner);
+  states.detect = stateOf(detectRunner || fixRunner);
+  res.json({ success: true, states });
+});
+
 // 暂停指定通道的任务（不重启、不丢进度；评论脚本在下一篇/下一条评论前阻塞）
 app.post('/api/pause', (req, res) => {
   const channel = (req.body && req.body.platform) || null;

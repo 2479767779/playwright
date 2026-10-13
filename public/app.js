@@ -984,6 +984,23 @@ function applyRunState() {
   // 其它页面（AI 配置 / 批量导入）不显示运行按钮，胶囊保持原值
 }
 
+// 从服务端拉一次各通道运行状态，写入 runStates。
+// 用途：runStates 只在前端内存里，刷新页面（F5 / Ctrl+R）会清空，
+// 导致「任务明明在跑，按钮却显示就绪」。页面初始化时调一次即可闭合。
+async function loadRunStates() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (!data || !data.success || !data.states) return;
+    Object.keys(data.states).forEach(function (ch) { runStates[ch] = data.states[ch]; });
+    detectBusy = getRunState('detect') !== 'idle';
+    applyRunState();
+  } catch (e) {
+    // 拿不到就按 idle 显示，与刷新前的旧行为一致，不额外报错打扰用户
+    console.error('读取运行状态失败:', e);
+  }
+}
+
 // 暂停/继续当前评论任务（通过 ipc，不重启、从当前位置继续）
 // 注意：服务端不推送 paused 状态，需在前端本地记状态，否则按钮不会跟着变
 async function pauseRun() {
@@ -1925,6 +1942,9 @@ socket.on('disconnect', () => updateEngineStatus(false));
 renderSidebar();
 document.getElementById('page-subtitle').textContent = platformSubtitles.config;
 renderContent('config');
+// 拉一次服务端状态：覆盖「浏览器刷新后 runStates 被清空」的情况
+// （Electron 里是 Ctrl+R / F5；任务仍在后台跑，按钮应显示为运行中）
+loadRunStates();
 
 // ===== 无边框窗口：自绘标题栏按钮 =====
 (function initTitlebar() {
