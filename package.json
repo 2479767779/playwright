@@ -72,7 +72,7 @@
     }
   },
   "keywords": ["ai", "comment", "automation"],
-  "author": "",
+  "author": "fengxiaoyang",
   "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
