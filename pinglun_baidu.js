@@ -130,20 +130,38 @@ const { checkPause } = require('./pauser');
         }
 
         // 循环当前文章评论n次
+        // 预生成流水线：把 AI 的等待藏进「发布 + 随机等待」里。
+        // 先发起第 1 条；之后每轮一进来就并行发起下一条，于是第 i+1 条的生成
+        // 与第 i 条的发布同时进行，能省掉 (n-1) 次 AI 延迟。
+        // 先挂一个空 catch：预生成的 promise 若被拒绝，避免 unhandledRejection；
+        // 真正的错误仍在下面的 await 处抛出并处理。
+        let pendingComment = generateQuestionComment(articleText, AI_CONFIG);
+        pendingComment.catch(() => {});
+
         for (let i = 1; i <= perUrlCommentCount; i++)
         {
           console.log(`当前文章第 ${i}/${perUrlCommentCount} 条评论`);
 
-          // 调用 AI 根据正文生成一条提问式评论；生成失败则跳过本条
+          // 取上一步预生成的结果；生成失败则跳过本条
           let randomText;
           try
           {
-            randomText = await generateQuestionComment(articleText, AI_CONFIG);
+            randomText = await pendingComment;
           } catch (genErr)
           {
             console.log(`⚠️ AI 生成失败，跳过本条：`, genErr.message);
             await randomSleep(3000, 6000);
+            // 本条失败：还有下一条就补发起，别让后面拿到已拒绝的 promise
+            if (i < perUrlCommentCount) {
+              pendingComment = generateQuestionComment(articleText, AI_CONFIG);
+              pendingComment.catch(() => {});
+            }
             continue;
+          }
+          // 立刻发起下一条的生成（不 await）—— 它和本条的填写/发布同时进行
+          if (i < perUrlCommentCount) {
+            pendingComment = generateQuestionComment(articleText, AI_CONFIG);
+            pendingComment.catch(() => {});
           }
           console.log(`本次评论内容：${randomText}`);
 

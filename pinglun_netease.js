@@ -94,15 +94,24 @@ const { detectArticle } = require('./detect');
         console.log(`已提取网易正文约 ${articleText.length} 字`);
         let previousCount = before.commentCount;
 
+        // 预生成流水线：把 AI 的等待藏进「发布 + 随机等待」里（详见其他平台脚本同样注释）
+        let pendingComment = generateQuestionComment(articleText, AI_CONFIG);
+        pendingComment.catch(() => {});
+
         for (let i = 1; i <= perUrlCommentCount; i++) {
           await checkPause();
           console.log(`当前文章第 ${i}/${perUrlCommentCount} 条网易评论`);
           let commentText;
           try {
-            commentText = await generateQuestionComment(articleText, AI_CONFIG);
+            commentText = await pendingComment;
           } catch (error) {
             console.log(`❌ AI 生成失败，停止当前网易文章：${error.message}`);
             break;
+          }
+          // 立刻发起下一条的生成（不 await）—— 它和本条的填写/发布同时进行
+          if (i < perUrlCommentCount) {
+            pendingComment = generateQuestionComment(articleText, AI_CONFIG);
+            pendingComment.catch(() => {});
           }
           console.log(`本次网易评论内容：${commentText}`);
 
