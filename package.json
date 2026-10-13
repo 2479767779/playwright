@@ -22,6 +22,7 @@
       "main.js",
       "preload.js",
       "server.js",
+      "runner-registry.js",
       "aiConfig.js",
       "aiComment.js",
       "logger.js",

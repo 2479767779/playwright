@@ -7,6 +7,8 @@ const fs = require('fs');
 const { fork, execFile } = require('child_process');
 const logger = require('./logger'); // 统一日志：控制台 + 落盘到 logs/ 目录
 const { probeConnection } = require('./aiComment'); // 连通性探测（与评论脚本同一套协议实现）
+// 平台顺序常量 + 「按通道定位 runner」的纯逻辑（抽出去是为了能单测）
+const { PLATFORM_ORDER, resolveRunner } = require('./runner-registry');
 
 // 可写工作目录：打包后由主进程透传 APP_USER_DATA（用户数据目录）；开发模式兜底用 __dirname
 const WORK_DIR = process.env.APP_USER_DATA ? path.join(process.env.APP_USER_DATA, 'runtime') : __dirname;
@@ -61,8 +63,7 @@ const URL_LIST_NAMES = {
   baidu: 'baiduUrlList',
   netease: 'neteaseUrlList'
 };
-// 一键运行的串行顺序
-const PLATFORM_ORDER = ['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'];
+// 一键运行的串行顺序（PLATFORM_ORDER，从 runner-registry 引入）
 // 参与检测的平台（搜狐使用页面 DOM 检测）
 const DETECT_PLATFORMS = ['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'];
 
@@ -101,27 +102,27 @@ function createRunner() {
     }
   };
   // 暂停/继续：通过 ipc 给评论脚本发消息，脚本在下一个检查点阻塞/放行（不重启、不丢进度）
+  // 返回布尔值表示「是否真的下发了」：阶段切换的瞬间 currentChild 可能为空，
+  // 此时返回 false，让调用方如实报错，而不是让界面假装已暂停（但实际还在跑）。
   runner.pause = () => {
     const c = runner.currentChild;
-    if (c && typeof c.send === 'function' && c.connected) {
-      runner.paused = true;
-      try { c.send({ cmd: 'pause' }); } catch (e) { /* ignore */ }
-    }
+    if (!c || typeof c.send !== 'function' || !c.connected) return false;
+    runner.paused = true;
+    try { c.send({ cmd: 'pause' }); } catch (e) { return false; }
+    return true;
   };
   runner.resume = () => {
     const c = runner.currentChild;
-    if (c && typeof c.send === 'function' && c.connected) {
-      runner.paused = false;
-      try { c.send({ cmd: 'resume' }); } catch (e) { /* ignore */ }
-    }
+    if (!c || typeof c.send !== 'function' || !c.connected) return false;
+    runner.paused = false;
+    try { c.send({ cmd: 'resume' }); } catch (e) { return false; }
+    return true;
   };
   return runner;
 }
 
-// 当前正在跑的 runner（各 runner 互斥，至多一个）。用于暂停/继续定位目标。
-function activeRunner() {
-  return allRunner || detectRunner || fixRunner || (runningProcesses.size ? [...runningProcesses.values()][0] : null);
-}
+// 「按通道定位 runner」的纯逻辑见 runner-registry.js（已从顶部引入），
+// 那里的注释详细说明了为什么平台通道不能退化成「取 runningProcesses 的第一个」。
 
 // fork 一个脚本，行缓冲 stdout/stderr（按行回调 onLog，避免半行被拆散），
 // 返回 { child, done }：child 供 runner 记录以便 kill，done 为退出码 Promise。
@@ -611,21 +612,33 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: '任务已停止' });
 });
 
-// 暂停当前评论任务（不重启、不丢进度；评论脚本在下一篇/下一条评论前阻塞）
+// 暂停指定通道的任务（不重启、不丢进度；评论脚本在下一篇/下一条评论前阻塞）
 app.post('/api/pause', (req, res) => {
-  const runner = activeRunner();
-  if (!runner) return res.json({ success: false, error: '没有运行中的任务' });
-  runner.pause();
-  logger.info('[pause] 已暂停');
+  const channel = (req.body && req.body.platform) || null;
+  const runner = resolveRunner(channel, { runningProcesses, allRunner, detectRunner, fixRunner });
+  if (!runner) {
+    const isPlatform = channel && PLATFORM_ORDER.includes(channel);
+    return res.json({ success: false, error: isPlatform ? '该平台没有运行中的任务' : '没有运行中的任务' });
+  }
+  if (!runner.pause()) {
+    return res.json({ success: false, error: '当前阶段无法暂停（正在切换流程），请稍后重试' });
+  }
+  logger.info(`[pause] 已暂停（channel=${channel || '未知'}）`);
   res.json({ success: true, message: '已暂停' });
 });
 
-// 继续当前评论任务（从暂停处继续）
+// 继续指定通道的任务（从暂停处继续）
 app.post('/api/resume', (req, res) => {
-  const runner = activeRunner();
-  if (!runner) return res.json({ success: false, error: '没有暂停的任务' });
-  runner.resume();
-  logger.info('[resume] 已继续');
+  const channel = (req.body && req.body.platform) || null;
+  const runner = resolveRunner(channel, { runningProcesses, allRunner, detectRunner, fixRunner });
+  if (!runner) {
+    const isPlatform = channel && PLATFORM_ORDER.includes(channel);
+    return res.json({ success: false, error: isPlatform ? '该平台没有运行中的任务' : '没有暂停的任务' });
+  }
+  if (!runner.resume()) {
+    return res.json({ success: false, error: '当前阶段无法继续（正在切换流程），请稍后重试' });
+  }
+  logger.info(`[resume] 已继续（channel=${channel || '未知'}）`);
   res.json({ success: true, message: '已继续' });
 });
 
