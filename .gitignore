@@ -46,6 +46,8 @@ chrome评论插件第一版源码0730/
 # 本机 AI 工具的状态目录（机器相关）
 .agents/
 .claude/
+# 本地 AI 助手的工作笔记：含本机环境细节与个人信息，开源仓库不包含
+.workbuddy/
 
 # Claude Code 本地配置（机器相关，不入库）
 .claude/settings.local.json
