@@ -14,9 +14,24 @@
 
 - 刷量、刷评论、刷赞、刷收藏，或任何形式的**虚假流量制造**；
 - 组织或参与**网络水军**、有偿发帖、舆论操纵、控评；
+- **将本软件（含修改版、衍生版）用于对外提供有偿服务**，包括但不限于：代刷评论、代刷量、代点赞收藏、代运营、按条计费的评论投放，或将本软件包装为工具/服务对外收费；
+- **任何以营利为目的、且违反目标平台规则或所在地法律法规的经营性活动**；
 - 商业推广灌水、垃圾信息（Spam）投放；
 - 对他人账号、内容进行骚扰、攻击、恶意举报；
 - 任何违反目标平台用户协议、社区规范或所在地法律法规的行为。
+
+### 1.1 与 MIT 许可证的关系（避免误解）
+
+本项目采用 **MIT 许可证**，而 MIT 是**明确允许商业使用**的（其授权含 use / copy / modify / merge / publish / distribute / sublicense / **sell**）。所以先把界限划清：
+
+| | 是否允许 |
+|---|---|
+| 你或你所在公司把本软件用于**自己的**商业场景（如内部自查自己账号的互动情况、基于它做二次开发、集成进自己的内部工具） | ✅ **允许**，这就是 MIT 的本意 |
+| 把本软件**当成牟利工具**去违反平台规则或法律 —— 例如对外提供代刷评论 / 代刷量 / 代运营等**有偿服务** | ❌ **禁止** |
+
+两者**并不矛盾**，因为性质不同：MIT 授予的是**版权层面的使用权**，而上表第二行禁止的是**使用行为本身违规**。版权许可从来不能、也不意图豁免你遵守平台协议与所在地法律的义务。
+
+一句话：**代码你可以自由使用、甚至商用；但"拿它去刷量牟利"这件事，无论是否商用都不允许。**
 
 ## 2. 平台规则与账号风险
 
@@ -66,6 +81,8 @@
 This project is provided for **personal, lawful use on your own accounts only**. It automates interactions with third-party platforms, which may **violate their Terms of Service and result in account suspension or permanent ban — at your own risk**.
 
 **Prohibited uses** include: artificially inflating engagement metrics, spam, paid astroturfing, opinion manipulation, harassment, or any unlawful activity.
+
+**Commercial use of the code itself is permitted under the MIT License. However, it is expressly prohibited to use this software (including modified or derivative versions) to provide paid services such as comment/like/engagement farming, managed-account operation, or pay-per-comment posting, or for any profit-driven activity that violates platform terms or applicable law.**
 
 The software is provided **"AS IS", without warranty of any kind**. Credentials are stored **in plain text on your local machine**. To the maximum extent permitted by law, the authors and contributors **accept no liability** for any damages, account penalties, or legal consequences arising from use of this software.
 
