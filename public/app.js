@@ -1063,6 +1063,22 @@ async function loadRunStates() {
   }
 }
 
+// 侧栏版本号：从服务端读 package.json 的 version。
+// 不要在 HTML 里硬编码 —— 之前写死的 "v2.4.0" 与 package.json 长期不一致。
+async function loadAppVersion() {
+  try {
+    const res = await fetch('/api/version');
+    const data = await res.json();
+    if (data && data.success && data.version) {
+      const el = document.getElementById('brand-version');
+      if (el) el.textContent = 'v' + data.version + ' · 桌面专业版';
+    }
+  } catch (e) {
+    // 拿不到就保留 HTML 里的兜底文案，不打扰用户
+    console.error('读取版本号失败:', e);
+  }
+}
+
 // 暂停/继续当前评论任务（通过 ipc，不重启、从当前位置继续）
 // 注意：服务端不推送 paused 状态，需在前端本地记状态，否则按钮不会跟着变
 async function pauseRun() {
@@ -2132,6 +2148,8 @@ renderContent('config');
 // 拉一次服务端状态：覆盖「浏览器刷新后 runStates 被清空」的情况
 // （Electron 里是 Ctrl+R / F5；任务仍在后台跑，按钮应显示为运行中）
 loadRunStates();
+// 侧栏版本号同样从服务端取，避免 HTML 里硬编码的版本号与 package.json 漂移
+loadAppVersion();
 
 // ===== 无边框窗口：自绘标题栏按钮 =====
 (function initTitlebar() {

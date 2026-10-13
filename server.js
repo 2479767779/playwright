@@ -660,6 +660,12 @@ function channelTarget(channel) {
   return channel || undefined;
 }
 
+// 应用版本号：取自 package.json，供界面显示。
+// 不要在 index.html 里硬编码 —— 之前那里写死过 "v2.4.0"，与 package.json 长期不一致。
+app.get('/api/version', (req, res) => {
+  res.json({ success: true, version: require('./package.json').version });
+});
+
 // 各通道当前运行状态。前端 runStates 只存在内存里，刷新页面（F5）会被清空，
 // 于是「任务在跑但按钮显示就绪」。前端启动时拉一次这个接口即可恢复。
 // 通道：平台名 / 'all' / 'detect'；状态：running | paused | idle
