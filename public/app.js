@@ -236,9 +236,9 @@ const templates = {
     <div class="config-card">
       <div class="card-head">
         <div class="card-title-row">${ic('play')}各平台文章链接</div>
-        <span class="chip chip-static chip-info">串行评论 · 按此顺序</span>
+        <span class="chip chip-static chip-info">评论 → 检测</span>
       </div>
-      <div class="hint-text" style="margin:0 0 14px;">为每个平台填入文章链接（每行一个）；也可先去「批量数据导入」自动分类回填到这里。一键运行按 知乎→头条→CSDN→搜狐→百度→网易 顺序串行评论，全部评论完后再统一检测。</div>
+      <div class="hint-text" style="margin:0 0 14px;">为每个平台填入文章链接（每行一个）；也可先去「批量数据导入」自动分类回填到这里。默认串行评论全部平台，全部评论完后再统一检测；可在下方「运行设置」里开启多平台并行。</div>
       <div class="form-row">
         ${['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'].map((p) => `
           <div class="form-group">
@@ -263,6 +263,22 @@ const templates = {
           <label class="checkbox-row"><input type="checkbox" id="all-enable-detect" checked> 全部评论完成后回查达标状态（搜狐也参与完整检测；网易仅检测评论数）</label>
         </div>
       </div>
+
+      <div class="parallel-box">
+        <label class="checkbox-row">
+          <input type="checkbox" id="all-parallel" onchange="onParallelToggle()"> 多平台并行（同时跑多个平台，总耗时最短）
+        </label>
+        <div class="form-group" id="all-parallel-lanes-wrap" style="display:none;margin-top:2px;">
+          <label>同时运行的平台数</label>
+          <select id="all-parallel-lanes" onchange="saveParallelPref()">
+            <option value="2">2 个（最稳）</option>
+            <option value="3" selected>3 个（推荐）</option>
+            <option value="6">6 个（全部，占内存最多）</option>
+          </select>
+        </div>
+        <div class="hint-text" id="all-parallel-hint">串行：按 知乎→头条→CSDN→搜狐→百度→网易 顺序逐个跑，一个跑完再跑下一个。</div>
+      </div>
+
       <div class="btn-group">
         <button class="btn btn-primary" id="all-start-btn" onclick="startAll()">${ic('play')}开始全部</button>
         <button class="btn btn-secondary" id="all-pause-btn" onclick="pauseRun()" disabled>${ic('pause')}暂停</button>
@@ -277,6 +293,14 @@ const templates = {
         <div class="card-title-row">${ic('activity')}运行进度</div>
       </div>
       <div id="all-progress" class="all-progress">尚未开始</div>
+      <div class="all-rows" id="all-rows">
+        ${['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'].map((p) => `
+          <div class="plat-row" id="all-row-${p}">
+            <span class="plat-row-name">${PLATFORM_LABELS[p]}</span>
+            <span class="plat-row-state" data-state="idle">未开始</span>
+          </div>
+        `).join('')}
+      </div>
     </div>
 
     <div class="log-block">
@@ -512,6 +536,47 @@ function renderSidebar() {
 }
 
 // 渲染内容
+// ===== 页面容器：建一次、留着复用，切页只换挂载的节点 =====
+//
+// 原实现每次切页都 innerHTML 全量重建，切走再切回会：
+//   - 把输入框里手填的内容覆盖回旧值（只能靠 importedUrls 等外部状态硬撑）
+//   - 丢掉页面内的滚动位置等一切临时状态
+//   - 每次切页都要重新解析一遍 HTML（有可见的闪动）
+// 改成「节点缓存 + 只换挂载」后，这些都自然保留。
+//
+// ⚠️ 为什么不干脆把 6 个平台页一起挂在 DOM 里：它们用的是**相同的元素 id**
+// （article-urls / comment-count / log-container …），同时挂载会让 getElementById
+// 全部命中第一个页面，产生一批很难排查的静默 bug。
+// 所以这里始终只挂载一个页面，其余节点游离保留（状态完整，只是不在文档里）。
+const pageCache = {};
+const pageInited = {};
+
+// 只负责把 HTML 建出来。**不要**在这里调用任何初始化函数 ——
+// 建节点时它还是游离的（不在文档里），那些函数内部用 document.getElementById
+// 会全部拿到 null。初始化统一放到 renderContent 里、挂载之后执行。
+function buildPageNode(key) {
+  const node = document.createElement('div');
+  node.className = 'page';
+  node.dataset.page = key;
+
+  if (key === 'config') {
+    node.innerHTML = templates.config();
+  } else if (key === 'import') {
+    node.innerHTML = templates.import();
+  } else if (key === 'all') {
+    node.innerHTML = templates.all();
+  } else if (key === 'detect') {
+    node.innerHTML = templates.detect();
+  } else {
+    const defaults = platformDefaults[key];
+    const urls = (importedUrls[key] && importedUrls[key].length)
+      ? importedUrls[key].join('\n')
+      : defaults.urls;
+    node.innerHTML = templates.platform(key, urls, defaults.userDataDir);
+  }
+  return node;
+}
+
 function renderContent(platform) {
   const content = document.getElementById('main-content');
   // 切页一次淡入（重新触发动画）
@@ -519,31 +584,27 @@ function renderContent(platform) {
   void content.offsetWidth;
   content.classList.add('page-enter');
 
-  if (platform === 'config') {
-    content.innerHTML = templates.config();
-    loadConfig();
-  } else if (platform === 'import') {
-    content.innerHTML = templates.import();
-    if (Object.keys(importedUrls).some(k => (importedUrls[k] || []).length > 0)) {
-      renderImportResult();
-    }
-  } else if (platform === 'all') {
-    content.innerHTML = templates.all();
-  } else if (platform === 'detect') {
-    content.innerHTML = templates.detect();
-    updateDetectClassify();
-    renderDetectionTable();
-  } else {
-    const defaults = platformDefaults[platform];
-    const urls = (importedUrls[platform] && importedUrls[platform].length)
-      ? importedUrls[platform].join('\n')
-      : defaults.urls;
-    content.innerHTML = templates.platform(platform, urls, defaults.userDataDir);
+  // 先把当前挂载的节点摘下来（它已存在 pageCache 里，状态不丢）
+  while (content.firstChild) content.removeChild(content.firstChild);
+  if (!pageCache[platform]) pageCache[platform] = buildPageNode(platform);
+  content.appendChild(pageCache[platform]);
+
+  // 一次性初始化：必须等挂载之后再做（内部要用 getElementById）。
+  // 同理，只做一次 —— 每次显示都重跑会把用户在表单里未保存的编辑冲掉。
+  if (!pageInited[platform]) {
+    pageInited[platform] = true;
+    if (platform === 'config') loadConfig();
   }
 
-  // 回填该页面已有的运行日志（切页不丢历史）
+  // 每次显示都要重刷的「会变的内容」：
+  //   - 日志：离开期间 socket 推来的日志先写进缓冲，这里回填
+  //     （节点游离时没法直接 append，所以日志缓冲仍然必要，不能删）
+  //   - 运行状态：离开期间 status 事件可能已把该通道切成 running/paused，
+  //     而那一刻该页面的 DOM 不在文档里，applyRunState 找不到元素
   renderLogPanel(activeLogKey());
-  // 恢复该页面按钮的运行状态（切页不重置按钮）
+  if (platform === 'import') renderImportResult();
+  if (platform === 'detect') { updateDetectClassify(); renderDetectionTable(); }
+  if (platform === 'all') { paintAllRows(); loadParallelPref(); }
   applyRunState();
 }
 
@@ -1078,16 +1139,11 @@ function progDone(text) { return '<span class="prog-done">' + ic('check') + text
 
 // 一键运行：进度更新
 socket.on('all-progress', (data) => {
-  if (currentPlatform !== 'all') return;
-  const el = document.getElementById('all-progress');
-  if (!el) return;
   const phaseLabel = data.phase === 'comment' ? '评论' : '检测';
-  const platLabel = PLATFORM_LABELS[data.platform] || data.platform;
-  if (data.status === 'running') {
-    el.innerHTML = phaseLabel + '阶段 (' + data.index + '/' + data.total + ')：' + platLabel + ' ' + progRunning('进行中');
-  } else {
-    el.innerHTML = phaseLabel + '阶段 (' + data.index + '/' + data.total + ')：' + platLabel + ' ' + progDone('完成');
-  }
+  const state = data.status === 'running' ? 'running' : (data.status === 'error' ? 'error' : 'done');
+  // 先记状态再落 DOM：该页面可能处于游离状态（节点被缓存但不在文档里），
+  // 这时写不到 DOM，切回「一键运行」页时由 paintAllRows 补画。
+  setRowState(data.platform, state, phaseLabel);
 });
 
 // 检测结果（整平台，来自一键运行检测阶段 或 检测中心一键检测；merge 时按 url 合并保留旧行）
@@ -1171,7 +1227,6 @@ socket.on('all-done', () => {
   if (el) el.innerHTML = progDone('全部运行完成');
   applyRunState();
 });
-
 socket.on('status', (data) => {
   if (!data || !data.platform) return;
   // 无论当前在哪一页都先记下来（切回该页时才能恢复按钮/胶囊）
@@ -1269,6 +1324,111 @@ function evidenceStatus(r) {
   return { status: 'unknown', label: e.status || '未知', detail: e.error || '' };
 }
 
+// ===== 多平台并行：偏好持久化 + 每平台进度行 =====
+const PARALLEL_PREF_KEY = 'aiCommentParallelV1';
+const ALL_ROW_PLATFORMS = ['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'];
+
+// 进度状态存内存：页面节点可能处于游离状态（不在文档里），
+// 直接写 DOM 会找不到元素，所以先记状态、再由 paintRow 落到 DOM。
+const allRowStates = {};
+let allRunMode = '';
+
+function loadParallelPref() {
+  let pref = null;
+  try { pref = JSON.parse(localStorage.getItem(PARALLEL_PREF_KEY) || 'null'); } catch (e) { pref = null; }
+  const enabled = !!(pref && pref.enabled);
+  const lanes = (pref && [2, 3, 6].indexOf(Number(pref.lanes)) >= 0) ? String(Number(pref.lanes)) : '3';
+  const cb = document.getElementById('all-parallel');
+  const sel = document.getElementById('all-parallel-lanes');
+  const wrap = document.getElementById('all-parallel-lanes-wrap');
+  if (cb) cb.checked = enabled;
+  if (sel) sel.value = lanes;
+  if (wrap) wrap.style.display = enabled ? '' : 'none';
+  updateParallelHint();
+}
+
+function saveParallelPref() {
+  const cb = document.getElementById('all-parallel');
+  const sel = document.getElementById('all-parallel-lanes');
+  const enabled = !!(cb && cb.checked);
+  const lanes = Number((sel && sel.value) || 3);
+  try { localStorage.setItem(PARALLEL_PREF_KEY, JSON.stringify({ enabled: enabled, lanes: lanes })); } catch (e) { /* ignore */ }
+}
+
+function onParallelToggle() {
+  const cb = document.getElementById('all-parallel');
+  const wrap = document.getElementById('all-parallel-lanes-wrap');
+  if (wrap) wrap.style.display = (cb && cb.checked) ? '' : 'none';
+  saveParallelPref();
+  updateParallelHint();
+}
+
+function updateParallelHint() {
+  const cb = document.getElementById('all-parallel');
+  const sel = document.getElementById('all-parallel-lanes');
+  const el = document.getElementById('all-parallel-hint');
+  if (!el) return;
+  if (cb && cb.checked) {
+    const n = Number((sel && sel.value) || 3);
+    el.innerHTML = '并行：最多同时跑 <b>' + n + '</b> 个平台，各自独立浏览器，跑完一个立刻补上下一个。'
+      + '<br>注意：每个平台约占 300~600MB 内存，' + n + ' 个同时跑需 ' + (n * 0.4).toFixed(1)
+      + 'GB 左右；机器吃紧时反而会因页面等待超时而变慢。';
+  } else {
+    el.textContent = '串行：按 知乎→头条→CSDN→搜狐→百度→网易 顺序逐个跑，一个跑完再跑下一个。';
+  }
+}
+
+function setRowState(p, state, phase) {
+  allRowStates[p] = { state: state, phase: phase || '' };
+  paintRow(p);
+  updateAllSummary();
+}
+
+function paintRow(p) {
+  const st = allRowStates[p] || { state: 'idle', phase: '' };
+  const row = document.getElementById('all-row-' + p);
+  if (!row) return;
+  const el = row.querySelector('.plat-row-state');
+  if (!el) return;
+  el.dataset.state = st.state;
+  const prefix = st.phase ? st.phase + ' ' : '';
+  if (st.state === 'running') el.innerHTML = prefix + progRunning('进行中');
+  else if (st.state === 'done') el.innerHTML = progDone((st.phase || '') + '完成');
+  else if (st.state === 'error') el.textContent = prefix + '失败';
+  else if (st.state === 'skipped') el.textContent = '已跳过';
+  else el.textContent = '未开始';
+}
+
+function paintAllRows() {
+  ALL_ROW_PLATFORMS.forEach(paintRow);
+  updateAllSummary();
+}
+
+function resetAllRows() {
+  ALL_ROW_PLATFORMS.forEach(function (p) { allRowStates[p] = { state: 'idle', phase: '' }; });
+  allRunMode = '';
+  paintAllRows();
+}
+
+function updateAllSummary() {
+  const el = document.getElementById('all-progress');
+  if (!el) return;
+  let running = 0, done = 0, failed = 0;
+  ALL_ROW_PLATFORMS.forEach(function (p) {
+    const st = (allRowStates[p] || {}).state;
+    if (st === 'running') running++;
+    else if (st === 'done') done++;
+    else if (st === 'error') failed++;
+  });
+  if (running === 0 && done === 0 && failed === 0) { el.textContent = '尚未开始'; return; }
+  const parts = [];
+  if (allRunMode) parts.push(allRunMode);
+  if (running) parts.push(running + ' 个进行中');
+  parts.push(done + '/' + ALL_ROW_PLATFORMS.length + ' 已完成');
+  if (failed) parts.push(failed + ' 个失败');
+  el.innerHTML = progRunning(parts.join(' · '));
+}
+
 // 把「一键运行」页里各平台 textarea 的内容回填到 importedUrls（切走时不丢失输入）
 function saveAllUrls() {
   ['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'].forEach(function (p) {
@@ -1279,7 +1439,7 @@ function saveAllUrls() {
   });
 }
 
-// 开始一键运行（串行：评论全部 → 检测全部）
+// 开始一键运行（评论全部 → 检测全部；开了多平台并行则按并发数同时跑）
 async function startAll() {
   saveAllUrls();
   const tasks = [];
@@ -1295,12 +1455,20 @@ async function startAll() {
   }
   const enableDetection = document.getElementById('all-enable-detect').checked;
 
+  // 多平台并行：开启时按所选并发数同时跑（上限不超过实际平台数）
+  const parallelCb = document.getElementById('all-parallel');
+  const lanesSel = document.getElementById('all-parallel-lanes');
+  const parallelOn = !!(parallelCb && parallelCb.checked);
+  const concurrency = parallelOn ? Math.min(Number((lanesSel && lanesSel.value) || 3), tasks.length) : 1;
+  allRunMode = concurrency > 1 ? ('并行 · 并发 ' + concurrency) : '串行';
+
   // 重置界面
   clearLogPanel('agg');
   const res = document.getElementById('detect-results');
   if (res) res.innerHTML = '';
+  resetAllRows();
   const prog = document.getElementById('all-progress');
-  if (prog) prog.innerHTML = progRunning('准备启动');
+  if (prog) prog.innerHTML = progRunning(allRunMode + ' · 准备启动');
 
   setRunState('all', 'running');
 
@@ -1308,7 +1476,7 @@ async function startAll() {
     const r = await fetch('/api/start-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tasks: tasks, commentCount: commentCount, enableDetection: enableDetection })
+      body: JSON.stringify({ tasks: tasks, commentCount: commentCount, enableDetection: enableDetection, concurrency: concurrency })
     });
     const data = await r.json();
     if (data.success) {
@@ -1861,7 +2029,7 @@ function doClassify(urls) {
     importedUrls[p].push(url);
   });
   renderImportResult();
-  refreshCurrentPlatformTextarea();
+  applyImportedUrls();
 }
 
 // 渲染分类结果
@@ -1917,16 +2085,22 @@ function clearImported() {
   if (fi) fi.value = '';
   const card = document.getElementById('import-result-card');
   if (card) card.style.display = 'none';
+  // 已缓存的页面节点不会自己重读 importedUrls，这里显式清空它们的链接框
+  applyImportedUrls();
 }
 
-// 分类后若当前正在看某个平台页，刷新其 textarea
-function refreshCurrentPlatformTextarea() {
-  if (['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'].indexOf(currentPlatform) >= 0) {
-    const ta = document.getElementById('article-urls');
-    if (ta && importedUrls[currentPlatform] && importedUrls[currentPlatform].length) {
-      ta.value = importedUrls[currentPlatform].join('\n');
-    }
-  }
+// 导入完成后，把链接回填到「已经建好并缓存」的页面节点里。
+// 页面是建一次就缓存的，不会因为切页重新读 importedUrls，所以导入后必须显式回填；
+// 否则用户先访问过某平台页、再导入链接，那个页面不会更新。
+function applyImportedUrls() {
+  const platforms = ['zhihu', 'toutiao', 'csdn', 'sohu', 'baidu', 'netease'];
+  platforms.forEach(function (p) {
+    const list = (importedUrls[p] || []).join('\n');
+    const own = pageCache[p];
+    if (own) { const ta = own.querySelector('#article-urls'); if (ta) ta.value = list; }
+    const allNode = pageCache.all;
+    if (allNode) { const ta = allNode.querySelector('#all-urls-' + p); if (ta) ta.value = list; }
+  });
 }
 
 // 页面加载时先恢复检测历史，再渲染导航和首页。

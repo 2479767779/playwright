@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI 评论助手</title>
+  <link rel="icon" href="icon.ico">
   <style>
     /* ============================================================
        设计令牌（与 Pencil 设计稿对齐）
@@ -445,6 +446,21 @@
 
     .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; padding: 8px 0; line-height: 1.5; }
     .checkbox-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+
+    /* ===================== 一键运行 · 每平台进度 ===================== */
+    .all-rows { margin-top: 12px; border: 1px solid var(--rule); border-radius: var(--r-ctl); overflow: hidden; }
+    .plat-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; font-size: 12.5px; border-bottom: 1px solid var(--rule); }
+    .plat-row:last-child { border-bottom: none; }
+    .plat-row-name { color: var(--ink); font-weight: 500; }
+    .plat-row-state { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-3); }
+    .plat-row-state[data-state="running"] { color: var(--accent); font-weight: 500; }
+    .plat-row-state[data-state="running"] svg.ic { animation: spin 1s linear infinite; }
+    .plat-row-state[data-state="done"] { color: var(--ok); font-weight: 500; }
+    .plat-row-state[data-state="error"] { color: var(--danger); font-weight: 500; }
+    .plat-row-state[data-state="skipped"] { color: var(--ink-3); }
+    .parallel-box { border: 1px solid var(--rule); border-radius: var(--r-ctl); padding: 10px 12px; margin-top: 4px; }
+    .parallel-box .hint-text { margin: 6px 0 0; }
+    .parallel-box select { padding: 4px 8px; font-size: 12.5px; }
 
     /* ===================== 检测结果表 ===================== */
     .table-wrap { border: 1px solid var(--rule); border-radius: var(--r-ctl); overflow: hidden; }
