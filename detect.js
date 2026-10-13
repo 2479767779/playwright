@@ -152,7 +152,7 @@ async function detectCsdn(manual) {
       || document.title.replace(/-CSDN博客\s*$/i, '').trim();
   } catch (e) { /* ignore */ }
 
-  // ---- 自动识别当前登录账号（评论接口用账号 ID，如 m0_12345678；昵称用于兜底匹配）----
+  // ---- 自动识别当前登录账号（评论接口用账号 ID，形如 m0_12345678；昵称用于兜底匹配）----
   const accountRoot = document.querySelector('.toolbar-btn-login-new, .toolbar-btn-login');
   let userName = '';
   const profileLinks = accountRoot
