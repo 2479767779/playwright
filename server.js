@@ -169,6 +169,28 @@ function copyToWorkDir(sourcePath, targetName) {
 }
 
 // ====================== 评论阶段 ======================
+// 往脚本源码里做一处注入。**匹配不到就抛错**，绝不静默放过。
+//
+// 为什么必须报错：旧实现直接用 String.replace，匹配不到时原样返回、不抛异常，
+// 于是任务照跑，但用的是脚本里硬编码的旧值（打包版会回落到 D:\playwright\pw-data-*，
+// 表现为「登录态莫名丢失」），现象迷惑且极难排查。
+//
+// 注意：传进来的正则**不能带 g 标志** —— 带 g 时 RegExp.test() 会因 lastIndex
+// 产生状态残留，导致同一实例第二次调用误判。
+function injectOrThrow(source, pattern, replacement, label, platform) {
+  if (pattern.global) {
+    throw new Error(`[${platform}] 注入失败：正则带了 g 标志（${label}）`);
+  }
+  if (!pattern.test(source)) {
+    throw new Error(
+      `[${platform}] 脚本注入失败：在 ${SCRIPT_MAP[platform] || platform} 里没找到 ${label}。`
+      + ' 该脚本的写法可能被改过，请同步检查 server.js 里的注入正则。'
+    );
+  }
+  // 用函数式替换，避免替换串里的 $& / $1 等被当成捕获组引用
+  return source.replace(pattern, () => replacement);
+}
+
 // 生成临时脚本（注入 URL 列表 / 评论数 / 用户数据目录），fork 执行并等待结束。
 async function runCommentPhase(runner, platform, urls, commentCount) {
   const scriptFile = SCRIPT_MAP[platform];
@@ -178,15 +200,30 @@ async function runCommentPhase(runner, platform, urls, commentCount) {
   // 替换 URL 列表
   const urlListName = URL_LIST_NAMES[platform];
   const urlsJson = JSON.stringify(urls, null, 4);
-  scriptContent = scriptContent.replace(
+  scriptContent = injectOrThrow(
+    scriptContent,
     new RegExp(`const ${urlListName} = \\[[\\s\\S]*?\\];`),
-    `const ${urlListName} = ${urlsJson};`
+    `const ${urlListName} = ${urlsJson};`,
+    `「${urlListName}」URL 列表`,
+    platform
   );
   // 替换评论数
-  scriptContent = scriptContent.replace(/const perUrlCommentCount = \d+;/, `const perUrlCommentCount = ${commentCount};`);
+  scriptContent = injectOrThrow(
+    scriptContent,
+    /const perUrlCommentCount = \d+;/,
+    `const perUrlCommentCount = ${commentCount};`,
+    '「perUrlCommentCount」每篇评论数',
+    platform
+  );
   // 替换浏览器 profile 目录（脚本里硬编码了 D:\playwright\pw-data-*，打包后该路径不存在）
   const pwDir = path.join(WORK_DIR, 'pw-data-' + platform).replace(/\\/g, '\\\\');
-  scriptContent = scriptContent.replace(/const userDataPath = '[^']*';/, `const userDataPath = '${pwDir}';`);
+  scriptContent = injectOrThrow(
+    scriptContent,
+    /const userDataPath = '[^']*';/,
+    `const userDataPath = '${pwDir}';`,
+    '「userDataPath」浏览器数据目录',
+    platform
+  );
 
   const tempScriptPath = path.join(WORK_DIR, `temp_${platform}_${Date.now()}.js`);
   fs.writeFileSync(tempScriptPath, scriptContent);
