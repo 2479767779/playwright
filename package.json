@@ -46,14 +46,18 @@
       {
         "from": "pw-browsers/chromium-1228",
         "to": "chromium-1228",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "public/icon.ico"
@@ -68,18 +72,22 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AI评论助手",
-      "installerLanguages": ["zh_CN"]
+      "installerLanguages": [
+        "zh_CN"
+      ]
     }
   },
-  "keywords": ["ai", "comment", "automation"],
+  "keywords": [
+    "ai",
+    "comment",
+    "automation"
+  ],
   "author": "fengxiaoyang",
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^4.18.2",
     "patchright": "^1.61.0",
-    "socket.io": "^4.6.1",
-    "xlsx": "^0.18.5"
+    "socket.io": "^4.6.1"
   },
   "devDependencies": {
     "electron": "^42.4.1",
