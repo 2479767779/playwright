@@ -63,15 +63,21 @@
   ; 快捷方式图标：Windows 的快捷方式默认取目标 exe 的**内嵌图标**。
   ; 而本项目的构建环境（沙箱策略）跳过了 exe 资源改写（signAndEditExecutable=false），
   ; 主程序 exe 里仍是 Electron 自带图标 —— 桌面/开始菜单就会显示成 Electron 的原子图标。
-  ; 快捷方式本身支持单独指定图标文件，所以这里用随包放在安装目录的 icon.ico 重建一次，
-  ; 图标即正确，不依赖 exe 内嵌资源。
-  ; （若将来在沙箱外构建、exe 图标被正常写入，这段也只是把图标指向同一个文件，无副作用。）
+  ; 快捷方式本身支持单独指定图标文件，所以这里用随包放在安装目录的 icon.ico 重建一次。
+  ;
+  ; ⚠️ 图标文件名必须带版本号：Windows 会按**图标路径**缓存快捷方式的位图，
+  ; 若每版都用同一个 "$INSTDIR\icon.ico"，即使文件内容已更新，桌面也可能继续显示旧图标
+  ; （实测踩过：装的是新版，桌面还是上一版图标）。每版一个文件名即可让缓存必然失效。
   ${if} ${FileExists} "$INSTDIR\icon.ico"
-    ${if} ${FileExists} "$newDesktopLink"
-      CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\icon.ico" 0
-    ${endif}
-    ${if} ${FileExists} "$newStartMenuLink"
-      CreateShortCut "$newStartMenuLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\icon.ico" 0
+    Delete "$INSTDIR\icon-*.ico"
+    CopyFiles /SILENT "$INSTDIR\icon.ico" "$INSTDIR\icon-${VERSION}.ico"
+    ${if} ${FileExists} "$INSTDIR\icon-${VERSION}.ico"
+      ${if} ${FileExists} "$newDesktopLink"
+        CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\icon-${VERSION}.ico" 0
+      ${endif}
+      ${if} ${FileExists} "$newStartMenuLink"
+        CreateShortCut "$newStartMenuLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\icon-${VERSION}.ico" 0
+      ${endif}
     ${endif}
   ${endif}
 !macroend
