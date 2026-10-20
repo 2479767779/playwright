@@ -1,6 +1,6 @@
 {
   "name": "ai-comment-assistant",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "AI 自动评论助手",
   "main": "main.js",
   "scripts": {
@@ -51,6 +51,12 @@
         ]
       }
     ],
+    "extraFiles": [
+      {
+        "from": "public/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "win": {
       "target": [
         {
@@ -72,6 +78,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AI评论助手",
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeaderIcon": "public/icon.ico",
       "installerLanguages": [
         "zh_CN"
       ]
