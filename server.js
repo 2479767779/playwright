@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
-const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { fork, execFile } = require('child_process');
@@ -34,15 +33,47 @@ if (process.env.APP_USER_DATA && !fs.existsSync(aiConfigPath)) {
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+// Socket.IO 不配置 CORS：前端用无参 io() 建立的是**同源**连接，本来就不需要跨域。
+// 这里原本是 origin: "*"，配合下面对 express 的 app.use(cors()) 一起，
+// 等于允许任意网页读写本机接口（见下方注释里的实测结论）。
+const io = socketIO(server);
+
+// ====================== 只允许本机访问 ======================
+// 背景（2026-10-20 实测）：原先 app.use(cors()) 用的是默认配置，即
+// Access-Control-Allow-Origin: *；Socket.IO 也是 origin:"*"；且整个服务没有任何鉴权。
+// 结果：用户浏览任意恶意网页时，那段 JS 可以 POST /api/start，
+// 用**用户自己的登录态**去评论攻击者指定的文章（实测返回 {"success":true,"message":"任务已启动"}）。
+// 只绑 127.0.0.1 挡不住这个 —— 同机浏览器访问本机端口是被允许的，CORS 才是那道门。
+//
+// 因此做三件事：
+//   1) 不再启用 CORS。前端（Electron 窗口 / 启动助手.bat）都是直接打开 localhost:3000，
+//      与接口同源，不存在跨域需求。
+//   2) 校验 Host 头：防 DNS rebinding（evil.com 解析到 127.0.0.1 时，Host 仍是 evil.com）。
+//   3) 有 Origin 头时也校验：挡住"简单请求"（text/plain 之类不带预检就发出去的那种）。
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+const isLocalHostname = (hostname) => LOCAL_HOSTNAMES.has(String(hostname || '').toLowerCase());
+
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '');
+  // "[::1]:3000" → "[::1]"；"localhost:3000" → "localhost"
+  if (!isLocalHostname(host.replace(/:\d+$/, ''))) {
+    logger.warn(`[security] 拒绝非本机 Host：host=${host || '(空)'} ${req.method} ${req.path}`);
+    return res.status(403).json({ success: false, error: '仅允许本机访问' });
   }
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost = '';
+    try { originHost = new URL(origin).hostname; } catch (e) { originHost = '__invalid__'; }
+    if (!isLocalHostname(originHost)) {
+      logger.warn(`[security] 拒绝跨站请求：origin=${origin} ${req.method} ${req.path}`);
+      return res.status(403).json({ success: false, error: '仅允许本机访问' });
+    }
+  }
+  next();
 });
 
 // 中间件
-app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
