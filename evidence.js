@@ -152,7 +152,7 @@ function extractArticleId(platform, url) {
   const query = parsed ? parsed.searchParams : null;
   const patterns = {
     zhihu: /\/p\/(\d+)/,
-    toutiao: /\/article\/(\d+)/,
+    toutiao: /\/(?:article|item)\/(\d+)/,
     csdn: /\/article\/details\/(\d+)/,
     sohu: /\/a\/(\d+)_/,
     netease: /\/article\/([A-Za-z0-9_-]+)\.html/i,

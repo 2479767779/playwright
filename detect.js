@@ -288,7 +288,9 @@ async function detectToutiao(manual) {
 
   // ---- 我的评论数 ----
   let commentCount = null;
-  const articleId = location.pathname.match(/^\/article\/(\d+)/)?.[1];
+  // 头条有两种文章路径：/article/<id>/（网页端）与 /item/<id>/（App / 头条号后台分享）。
+  // 两种路径里的数字都是同一个 group_id，评论接口照常可用。
+  const articleId = location.pathname.match(/^\/(?:article|item)\/(\d+)/)?.[1];
   if (articleId && matchSet.length) {
     try {
       const seenOffsets = new Set();

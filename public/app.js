@@ -1996,7 +1996,8 @@ function extractUrls(text) {
 function classifyUrl(url) {
   const u = url.toLowerCase();
   if (/zhuanlan\.zhihu\.com\/p\//.test(u) || /zhihu\.com\/p\//.test(u)) return 'zhihu';
-  if (/toutiao\.com\/article\//.test(u)) return 'toutiao';
+  // 头条有两种文章路径：/article/<id>/（网页端）与 /item/<id>/（App / 头条号后台分享出来的）
+  if (/toutiao\.com\/(?:article|item)\//.test(u)) return 'toutiao';
   if (/csdn\.net\/[^/]*\/article\/details\//.test(u)) return 'csdn';
   if (/sohu\.com\/a\//.test(u)) return 'sohu';
   if (/baijiahao\.baidu\.com\/s\?id=/.test(u)) return 'baidu';

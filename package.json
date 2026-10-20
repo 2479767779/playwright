@@ -7,7 +7,7 @@
     "start": "electron .",
     "dev": "electron .",
     "server": "node server.js",
-    "test": "node tests/runner-registry.check.js",
+    "test": "node tests/runner-registry.check.js && node tests/url-rules.check.js",
     "dist": "electron-builder --win --x64",
     "postinstall": "electron-builder install-app-deps"
   },
