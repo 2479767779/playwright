@@ -71,5 +71,29 @@ ok('detectCsdn 用 active 类判断新版状态', () => {
   assert.ok(/classList\.contains\('active'\)/.test(body), '新版状态判断应基于 active 类');
 });
 
+// ---- 3. 留痕端：点赞收藏截图的定位选择器也要两套 ----
+// 漏掉这里的后果：检测两个绿勾都对，但留痕报「未找到点赞操作栏」→ 整行被判「部分完成」。
+function actionSelectorsBody() {
+  const src = readSrc('evidence.js');
+  const start = src.indexOf('const ACTION_SELECTORS');
+  assert.ok(start >= 0, 'evidence.js 里没找到 ACTION_SELECTORS');
+  const rest = src.slice(start);
+  const end = rest.indexOf('\n};');
+  assert.ok(end > 0, 'ACTION_SELECTORS 定义不完整');
+  return rest.slice(0, end);
+}
+
+ok('evidence.js 的 ACTION_SELECTORS 同时包含新版 sidebar 定位', () => {
+  const body = actionSelectorsBody();
+  assert.ok(body.includes('#sidebar-like'), '缺少新版点赞定位 #sidebar-like（新版页面留痕会报「未找到点赞操作栏」）');
+  assert.ok(body.includes('#sidebar-collect'), '缺少新版收藏定位 #sidebar-collect');
+  assert.ok(body.includes('.sidebar'), '缺少新版 sidebar 容器兜底');
+});
+
+ok('evidence.js 的 ACTION_SELECTORS 同时保留旧版工具栏定位', () => {
+  const body = actionSelectorsBody();
+  assert.ok(body.includes('is-like-imgactive'), '缺少旧版点赞定位 img#is-like-imgactive');
+});
+
 console.log('\n汇总: PASS ' + pass + ' / ' + (pass + fail));
 process.exit(fail ? 1 : 0);

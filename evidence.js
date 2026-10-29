@@ -66,7 +66,14 @@ const ACTION_SELECTORS = {
     'div.detail-like[role="button"]',
     '[aria-label*="点赞"]',
   ],
+  // CSDN 文章页两套结构并存（2026-10-29 实测）：
+  //   新版：右侧固定 sidebar，点赞 #sidebar-like / 收藏 #sidebar-collect（旧选择器全部为 0）
+  //   旧版：正文顶部工具栏 img#is-like-img(active)（新版页面 .sidebar 为 0）
+  // 截图是整屏截图、target 只用于滚动定位，因此定位到点赞按钮即可让点赞与收藏同时入画。
   csdn: [
+    '#sidebar-like',
+    '#sidebar-collect',
+    '.sidebar',
     '#is-like-imgactive',
     '#is-like-img',
     'img[src*="is-like"]',
