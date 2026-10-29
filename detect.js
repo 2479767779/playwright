@@ -233,16 +233,28 @@ async function detectCsdn(manual) {
   }
 
   // ---- 点赞 / 收藏 ----
+  // CSDN 两套结构：新版看 #sidebar-like / #sidebar-collect 的 `active` 类；
+  // 旧版看 img#is-like-imgactive / #is-collection-imgactive 是否可见。
   let liked = null;
   let collected = null;
-  const likeActive = document.querySelector('img#is-like-imgactive');
-  const likeInactive = document.querySelector('img#is-like-img');
-  if (likeActive && isVisible(likeActive)) liked = true;
-  else if (likeInactive) liked = false;
-  const colActive = document.querySelector('img#is-collection-imgactive');
-  const colInactive = document.querySelector('img#is-collection-img');
-  if (colActive && isVisible(colActive)) collected = true;
-  else if (colInactive) collected = false;
+  const sidebarLike = document.querySelector('#sidebar-like');
+  if (sidebarLike) {
+    liked = sidebarLike.classList.contains('active');
+  } else {
+    const likeActive = document.querySelector('img#is-like-imgactive');
+    const likeInactive = document.querySelector('img#is-like-img');
+    if (likeActive && isVisible(likeActive)) liked = true;
+    else if (likeInactive) liked = false;
+  }
+  const sidebarCollect = document.querySelector('#sidebar-collect');
+  if (sidebarCollect) {
+    collected = sidebarCollect.classList.contains('active');
+  } else {
+    const colActive = document.querySelector('img#is-collection-imgactive');
+    const colInactive = document.querySelector('img#is-collection-img');
+    if (colActive && isVisible(colActive)) collected = true;
+    else if (colInactive) collected = false;
+  }
 
   return { platform: 'csdn', title, username: matchSet.join(','), commentCount, liked, collected, commentIds: myIds, commentAuthors: myAuthors };
 }

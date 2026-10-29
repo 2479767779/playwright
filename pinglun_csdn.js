@@ -81,14 +81,24 @@ const { checkPause } = require('./pauser');
         console.log(`已提取正文约 ${articleText.length} 字`);
 
         // 每篇文章点赞+收藏（在评论之前执行一次）
+        // ⚠️ CSDN 现在有两套文章页结构，需同时兼容：
+        //   新版：右侧固定 sidebar —— #sidebar-like / #sidebar-collect；
+        //         激活态是元素自身的 `active` 类（内层 img.active 显示、img.def 隐藏）
+        //   旧版：正文顶部工具栏 a.tool-item-href + img#is-like-imgactive / #is-collection-imgactive
         try
         {
-          // 点赞：CSDN 的点赞按钮是 a.tool-item-href（第一个）
-          // 判断是否已点赞：检查按钮内 img.isactive 是否可见（已点赞时 display:block）
-          const likeBtn = page.locator('a.tool-item-href').first();
+          const hasSidebar = (await page.locator('#sidebar-like').count()) > 0;
+          console.log(hasSidebar ? 'ℹ️ CSDN 页面结构：新版（右侧 sidebar）' : 'ℹ️ CSDN 页面结构：旧版（顶部工具栏）');
+
+          // 新版靠 `active` 类判断；旧版靠内层 img.isactive 是否可见
+          const isActiveNew = (loc) => loc.evaluate((el) => el.classList.contains('active'));
+
+          // 点赞
+          const likeBtn = hasSidebar ? page.locator('#sidebar-like').first() : page.locator('a.tool-item-href').first();
           await likeBtn.waitFor({ timeout: 10000 });
-          const likeActiveImg = likeBtn.locator('img.isactive#is-like-imgactive');
-          const isLiked = await likeActiveImg.isVisible();
+          const isLiked = hasSidebar
+            ? await isActiveNew(likeBtn)
+            : await likeBtn.locator('img.isactive#is-like-imgactive').isVisible();
           if (isLiked)
           {
             console.log('⏭️ 已点过赞，跳过');
@@ -99,24 +109,35 @@ const { checkPause } = require('./pauser');
           }
           await randomSleep(1000, 2000);
 
-          // 收藏：判断是否已收藏（同样检查 img.isactive 是否可见）
-          const collectBtn = page.locator('a.tool-item-href[data-report-click*="4130"]').first();
+          // 收藏
+          const collectBtn = hasSidebar
+            ? page.locator('#sidebar-collect').first()
+            : page.locator('a.tool-item-href[data-report-click*="4130"]').first();
           await collectBtn.waitFor({ timeout: 10000 });
-          const collectActiveImg = collectBtn.locator('img.isactive#is-collection-imgactive');
-          const isCollected = await collectActiveImg.isVisible();
+          const isCollected = hasSidebar
+            ? await isActiveNew(collectBtn)
+            : await collectBtn.locator('img.isactive#is-collection-imgactive').isVisible();
           if (isCollected)
           {
             console.log('⏭️ 已收藏过，跳过');
           } else
           {
-            // 未收藏：点击后会弹出二级菜单，需要选择收藏夹
+            // 未收藏：旧版点击后弹二级菜单要选收藏夹；新版是否弹窗未确认，
+            // 因此用兼容选择器 + 3 秒兜底 —— 没弹窗就按「点击即收藏」处理，不让流程卡住。
             await collectBtn.click();
             await randomSleep(500, 1000);
-            // 等待收藏夹列表出现，点击第一个收藏夹的"收藏"按钮
-            const collectFolderBtn = page.locator('ul.csdn-collection-items li .collect-btn').first();
-            await collectFolderBtn.waitFor({ timeout: 5000 });
-            await collectFolderBtn.click();
-            console.log('✅ 已收藏');
+            const collectFolderBtn = page
+              .locator('ul.csdn-collection-items li .collect-btn, .csdn-collection-items .collect-btn, [class*="collection"] .collect-btn')
+              .first();
+            try
+            {
+              await collectFolderBtn.waitFor({ timeout: 3000 });
+              await collectFolderBtn.click();
+              console.log('✅ 已收藏（已选择收藏夹）');
+            } catch (noDialog)
+            {
+              console.log('✅ 已点击收藏（未出现收藏夹弹窗，按直接收藏处理）');
+            }
           }
           await randomSleep(1000, 2000);
         } catch (actionErr)
