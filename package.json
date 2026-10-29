@@ -1,6 +1,6 @@
 {
   "name": "ai-comment-assistant",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "AI 自动评论助手",
   "main": "main.js",
   "scripts": {
