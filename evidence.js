@@ -89,7 +89,8 @@ const ACTION_SELECTORS = {
     '[class*="like"]',
   ],
   // 网易没有文章级点赞/收藏，用完整跟贴区作为文章级状态截图入口。
-  netease: ['.tie-new', '.tie-hot', '#tieArea', 'article', 'main', 'body'],
+  // 文章页评论区容器两套：#tieArea（旧）与 #post_comment_area / .tie-areas（2026-10 新版）。
+  netease: ['#post_comment_area', '.tie-areas', '.tie-new', '.tie-hot', '#tieArea', 'article', 'main', 'body'],
 };
 
 const PUBLISH_DATE_SELECTORS = [
@@ -525,7 +526,7 @@ const COMMENT_SECTION_SELECTORS = {
   csdn: ['#comment', '.comment-list-box', '.comment-list', '[class*="comment-list"]', '.new-comment'],
   baidu: ['.xcp-list', '[class*="comment"]'],
   sohu: ['#commentList', '#meComment', '#comment_area', 'body'],
-  netease: ['.tie-new', '.tie-hot', '#tieArea', 'body'],
+  netease: ['#post_comment_area', '.tie-areas', '.tie-new', '.tie-hot', '#tieArea', 'body'],
 };
 
 // 各平台「评论项」首选选择器（用于等待评论区真正渲染出评论）

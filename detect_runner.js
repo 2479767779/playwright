@@ -50,33 +50,98 @@ async function getTitle(page) {
   try { return (await page.title()) || ''; } catch (e) { return ''; }
 }
 
-async function waitForNeteaseLogin(page, timeoutMs = 5 * 60 * 1000) {
-  const readAccount = () => page.evaluate(() => {
+// 网易登录态判定（2026-10-29 重写）。
+//
+// 门户登录态 ≠ 跟帖登录态：
+//   勾选「10天免登录」后，门户靠 NTES_YD_PASSPORT 长期保持登录（页头一直显示「安全退出」），
+//   但跟帖系统要 NTES_SESS，浏览器会话一结束/过期就没了 →
+//   comment.api.163.com/.../users/myInfo 返回 401「未认证用户」→
+//   跟帖区整块不渲染（评论数显示 0），输入框也不存在。
+// 旧实现只找 `#tieArea` 输入框里的昵称，遇到这种情况会误报「未检测到登录态」并死等 5 分钟，
+// 用户完全不知道该怎么办。现在改为以 myInfo 为准，并把原因讲清楚。
+const NETEASE_PRODUCT_KEY = 'a2869674571f77b5a0867c3d71db5856';
+
+async function readNeteaseAuth(page) {
+  return page.evaluate(async (productKey) => {
     const clean = (value) => String(value || '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+    // 跟帖会话：唯一可靠口径
+    let commentAuth = 'unknown';
+    let commentUserId = '';
+    let commentNickname = '';
+    try {
+      const r = await fetch(
+        `https://comment.api.163.com/api/v1/products/${productKey}/users/myInfo?callback=_aiNeUser&_=${Date.now()}`,
+        { credentials: 'include', headers: { Accept: 'text/javascript, application/json' } },
+      );
+      if (r.status === 401) commentAuth = 'invalid';
+      else if (r.ok) {
+        commentAuth = 'ok';
+        const text = await r.text();
+        const open = text.indexOf('(');
+        const close = text.lastIndexOf(')');
+        let data = null;
+        try { data = open > -1 && close > open ? JSON.parse(text.slice(open + 1, close)) : JSON.parse(text); } catch (_) { data = null; }
+        const user = data?.user || data?.data || data || {};
+        commentUserId = clean(user.userId || user.id || '');
+        commentNickname = clean(user.nickname || user.nickName || user.name || '');
+      }
+    } catch (_) { /* 网络异常按 unknown 处理 */ }
+    // 门户登录态：页头出现「安全退出」即视为已登录
+    const portalLoggedIn = /安全退出/.test(clean(document.body?.innerText || '').slice(0, 3000));
+    // 输入框昵称（只有跟帖区渲染出来才存在，仅作兜底）
     const nickname = clean(
       document.querySelector('#tieArea .tie-input-bar .photo-area .nickname')?.textContent
-        || document.querySelector('#tieArea .submit-row .photo-area')?.textContent,
+        || document.querySelector('#post_comment_area .tie-input-bar .photo-area .nickname')?.textContent
+        || document.querySelector('.tie-input-bar .photo-area .nickname')?.textContent,
     );
-    let userId = '';
-    const logout = document.querySelector('#tieArea a[href*="reg.163.com/Logout.jsp"]');
-    try {
-      const value = logout && new URL(logout.href).searchParams.get('username');
-      if (value && /^\d+$/.test(value)) userId = value;
-    } catch (_) { /* ignore */ }
-    return { nickname, userId };
-  });
+    return { commentAuth, commentUserId, commentNickname, portalLoggedIn, nickname };
+  }, NETEASE_PRODUCT_KEY).catch(() => ({
+    commentAuth: 'unknown', commentUserId: '', commentNickname: '', portalLoggedIn: false, nickname: '',
+  }));
+}
 
-  await page.evaluate(() => document.querySelector('#tieArea')?.scrollIntoView({ block: 'center' })).catch(() => {});
-  let account = await readAccount().catch(() => ({ nickname: '', userId: '' }));
-  if (account.nickname || account.userId) return account;
-  console.log('⚠️ 未检测到网易登录态：请在弹出的文章页登录网易，登录后会自动继续（最多等 5 分钟）。');
+async function waitForNeteaseLogin(page, timeoutMs = 2 * 60 * 1000) {
+  await page.evaluate(() => {
+    const el = document.querySelector('#post_comment_area')
+      || document.querySelector('#tieArea')
+      || document.querySelector('.tie-areas');
+    el?.scrollIntoView({ block: 'center' });
+  }).catch(() => {});
+
+  let state = await readNeteaseAuth(page);
+  // 输入框昵称存在 = 跟帖区渲染出来了，等价于登录可用；myInfo 异常时用它兜底，避免误判要重新登录
+  if (state.commentAuth === 'ok' || (state.commentAuth === 'unknown' && state.nickname)) {
+    return { nickname: state.commentNickname || state.nickname, userId: state.commentUserId };
+  }
+
+  if (state.portalLoggedIn) {
+    console.log('⚠️ 网易门户仍是登录状态，但**跟帖登录态已失效**（跟帖接口返回 401「未认证用户」）。');
+    console.log('   这就是「评论区显示 0 条、什么都没有」的原因：门户靠「10天免登录」保持着登录，跟帖会话并没有。');
+    console.log('   请在弹出的窗口里做两步：① 点右上角「安全退出」；② 重新登录网易，**不要勾选「10天免登录」**。');
+    console.log(`   登录完成后会自动继续（最多等 ${Math.round(timeoutMs / 60000)} 分钟）。`);
+  } else {
+    console.log(`⚠️ 网易未登录：请在弹出的文章页登录网易，登录后会自动继续（最多等 ${Math.round(timeoutMs / 60000)} 分钟）。`);
+  }
+
+  // 手填账号时仍然可以算数：检测端会自己拼跟帖接口，按昵称匹配，不需要跟帖会话。
+  // 这种情况不必卡在这里等用户动手，直接放行（评论发布才必须要跟帖会话）。
+  if (MANUAL_USER) {
+    console.log(`ℹ️ 已手填账号「${MANUAL_USER}」：按昵称统计跟帖数不依赖跟帖登录态，继续检测。`);
+    return { nickname: '', userId: '' };
+  }
+
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    await page.waitForTimeout(2000);
-    account = await readAccount().catch(() => ({ nickname: '', userId: '' }));
-    if (account.nickname || account.userId) return account;
+    await page.waitForTimeout(2500);
+    state = await readNeteaseAuth(page);
+    if (state.commentAuth === 'ok') {
+      console.log(`✅ 网易跟帖登录态已恢复：${state.commentNickname || state.commentUserId}`);
+      return { nickname: state.commentNickname || state.nickname, userId: state.commentUserId };
+    }
   }
-  throw new Error('等待网易登录超时，请重新运行');
+  throw new Error(state.portalLoggedIn
+    ? '网易跟帖登录态失效未恢复：请点右上角「安全退出」后重新登录网易，且不要勾选「10天免登录」'
+    : '等待网易登录超时，请重新运行');
 }
 
 function neteaseCommentThreadUrl(articleUrl) {
