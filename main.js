@@ -8,6 +8,15 @@ const { fork } = require('child_process');
 let mainWindow = null;
 let serverProcess = null;
 
+// 内置服务端口。
+// 原来固定 3000，这个端口太常见（各种本地 dev server 默认都是它），
+// 用户机器上只要别的程序占着，本应用就会「启动超时」打不开。
+// 现在改成不常用的 27188，并且被占用时自动往后顺延（27188–27197）。
+// 想固定成别的端口：设环境变量 AI_COMMENT_PORT 即可。
+const BASE_PORT = Number(process.env.AI_COMMENT_PORT) || 27188;
+const PORT_SCAN_COUNT = 10;
+let activePort = BASE_PORT;
+
 // chromium 路径：必须在 fork 任何子进程之前设到环境变量
 // patchright 会在该路径下自动补 chromium-<revision>/ 子目录，所以这里只给到 resources
 // （打包后 chromium 随包在 resources/chromium-1228/，由 extraResources 放置）
@@ -30,8 +39,12 @@ if (!gotLock) {
   });
 }
 
+// 探测端口是否可绑：先真的绑一次再释放，比「看有没有进程连得上」可靠
+// （有些程序绑的是 0.0.0.0 或 ::1，单纯 connect 127.0.0.1 测不出来）
+const { pickPort } = require('./port-utils');
+
 // fork 启动内置 server（Electron 自身当 node，无需用户装 Node）
-function startServer() {
+function startServer(port) {
   const serverPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app', 'server.js')
     : path.join(__dirname, 'server.js');
@@ -44,7 +57,7 @@ function startServer() {
       APP_USER_DATA: app.getPath('userData'),
       APP_INSTALL_DIR: app.isPackaged ? path.dirname(process.execPath) : __dirname,
       PLAYWRIGHT_BROWSERS_PATH: process.env.PATCHRIGHT_BROWSERS_PATH,
-      PORT: '3000'
+      PORT: String(port)
     },
     cwd: __dirname,
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -60,7 +73,7 @@ function startServer() {
   });
 }
 
-// 轮询 3000 端口，真正 listen 后再开窗（替代固定 setTimeout）
+// 轮询端口，真正 listen 后再开窗（替代固定 setTimeout）
 function waitForServer(port, cb, tries) {
   tries = tries || 0;
   const sock = net.connect({ port, host: '127.0.0.1' }, () => {
@@ -98,7 +111,7 @@ function createWindow() {
   ipcMain.on('win-control', (e, cmd) => winControls(cmd));
 
   Menu.setApplicationMenu(null); // 去掉默认菜单栏
-  mainWindow.loadURL('http://localhost:3000');
+  mainWindow.loadURL(`http://127.0.0.1:${activePort}`);
 
   // 文章链接（target=_blank）等外部链接 → 用系统默认浏览器打开（在那儿手动登录操作），
   // 而不是在 app 内部开新窗口。
@@ -110,13 +123,21 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-app.whenReady().then(() => {
-  startServer();
-  waitForServer(3000, (ok) => {
+app.whenReady().then(async () => {
+  const port = await pickPort(BASE_PORT, PORT_SCAN_COUNT);
+  if (!port) {
+    dialog.showErrorBox('启动失败', `端口 ${BASE_PORT}–${BASE_PORT + PORT_SCAN_COUNT - 1} 全部被占用，无法启动内置服务。\n\n请关掉占用这些端口的程序后重试，或设置环境变量 AI_COMMENT_PORT 指定别的端口。`);
+    app.quit();
+    return;
+  }
+  activePort = port;
+  if (port !== BASE_PORT) console.log(`[main] 端口 ${BASE_PORT} 被占用，改用 ${port}`);
+  startServer(port);
+  waitForServer(port, (ok) => {
     if (ok) {
       createWindow();
     } else {
-      dialog.showErrorBox('启动失败', '内置服务启动超时，请检查端口 3000 是否被占用后重试。');
+      dialog.showErrorBox('启动失败', `内置服务启动超时（端口 ${port}）。请重启应用；若反复出现，请检查安全软件是否拦截了本程序。`);
       app.quit();
     }
   });

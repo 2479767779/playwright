@@ -826,7 +826,7 @@ function updateEngineStatus(connected) {
   const ep = document.getElementById('engine-endpoint');
   if (dot) dot.className = 'dot-live' + (connected ? '' : ' off');
   if (title) title.textContent = connected ? '本地引擎运行中' : '本地引擎已断开';
-  if (ep) ep.textContent = '127.0.0.1:' + (location.port || '3000') + (connected ? ' (正常响应)' : ' (无响应)');
+  if (ep) ep.textContent = '127.0.0.1:' + (location.port || '27188') + (connected ? ' (正常响应)' : ' (无响应)');
 }
 
 // 启动任务

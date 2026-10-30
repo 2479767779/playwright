@@ -46,7 +46,7 @@ const io = socketIO(server);
 // 只绑 127.0.0.1 挡不住这个 —— 同机浏览器访问本机端口是被允许的，CORS 才是那道门。
 //
 // 因此做三件事：
-//   1) 不再启用 CORS。前端（Electron 窗口 / 启动助手.bat）都是直接打开 localhost:3000，
+//   1) 不再启用 CORS。前端（Electron 窗口 / 启动助手.bat）都是直接打开本机端口，
 //      与接口同源，不存在跨域需求。
 //   2) 校验 Host 头：防 DNS rebinding（evil.com 解析到 127.0.0.1 时，Host 仍是 evil.com）。
 //   3) 有 Origin 头时也校验：挡住"简单请求"（text/plain 之类不带预检就发出去的那种）。
@@ -904,7 +904,24 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+// 默认端口从 3000 改成 27188：3000 太常见，本机随便一个 dev server 占着就打不开。
+// 桌面端由 main.js 先探测空闲端口再通过 PORT 注入；bat / 源码模式用这里的默认值。
+const PORT = Number(process.env.PORT) || Number(process.env.AI_COMMENT_PORT) || 27188;
+
+// 监听失败必须显式报错并退出：
+// 之前没有 error 监听，端口被占用时抛 Unhandled 'error' event，
+// 用户只看到「启动超时」要干等 60 秒，日志里也没有线索。
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    logger.error(`❌ 端口 ${PORT} 已被占用，服务无法启动。请关闭占用该端口的程序，或换个端口后重试。`);
+  } else if (err && err.code === 'EACCES') {
+    logger.error(`❌ 没有权限绑定端口 ${PORT}，请换一个 1024 以上的端口。`);
+  } else {
+    logger.error(`❌ 服务启动失败：${err && err.message ? err.message : String(err)}`);
+  }
+  setTimeout(() => process.exit(1), 50);
+});
+
 // 只监听回环地址：桌面端自己访问 + 本机浏览器调试；不暴露给局域网
 server.listen(PORT, '127.0.0.1', () => {
   logger.info('=================================');

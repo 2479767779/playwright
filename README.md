@@ -99,7 +99,7 @@
 npm install          # patchright 会下载 Chromium 到 pw-browsers/（约 400MB+）
 
 npm start            # Electron 桌面窗口（与正式版一致）
-npm run server       # 或：纯服务 + 系统浏览器打开 http://localhost:3000
+npm run server       # 或：纯服务 + 系统浏览器打开 http://127.0.0.1:27188
 ```
 
 ---
@@ -203,6 +203,9 @@ npm run dist             # NSIS 安装包 → release/AI评论助手 Setup <版�
 
 **Q：会不会被封号？**
 存在风险。建议每篇评论数控制在 1~3 条、保留足够间隔，并遵守平台规则。详见 [DISCLAIMER.md](DISCLAIMER.md)。
+
+**Q：端口会不会冲突？怎么换端口？**
+内置服务默认用不常用的 **27188**（原来是 3000，这个号太常见，被别的程序占着就打不开）。如果 27188 也被占用，应用会自动往后顺延到 27197。想固定成别的端口：设置环境变量 `AI_COMMENT_PORT=xxxxx` 再启动。
 
 **Q：换电脑 / 换账号怎么办？**
 程序内「检测账号」处修改匹配用的账号名；平台登录态保存在 `pw-data-<平台>/`，删除该目录即可退出登录重新登。
