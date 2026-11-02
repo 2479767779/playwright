@@ -470,6 +470,40 @@ async function clickLoadMore(page, platform) {
     }).catch(() => false);
   }
 
+  // 搜狐：评论区只渲染前 15 条，后面靠「已有N人参与，点击查看更多精彩评论」按钮分批加载
+  // （每点一次 +10 条，走 uis.mp.sohu.com/wap/api/comments/pages?page_no=N）。
+  // 2026-11-02 实测两个坑：
+  //   1) 旧的文字正则要求「查看更多…评论」，而这个文案是「查看更多精彩评论」，中间多了「精彩」→ 从来没匹配上；
+  //   2) 这个 Vue 组件对 DOM 的 el.click() 没反应，**必须用真实鼠标点击**（数量才会涨）。
+  // 表现就是：评论一直停在 15 条、页面却一直往下滚，最后报「已加载 15 条评论，但未匹配到账号」。
+  if (platform === 'sohu') {
+    const itemSelector = '#commentList [class*="comment-item"], #commentList li';
+    const before = await page.locator(itemSelector).count().catch(() => 0);
+    const button = await firstVisibleLocator(page, [
+      '.more.has-more',
+      '#commentList .more',
+      '[class*="more"][class*="has-more"]',
+    ]);
+    if (!button) return false;
+    try {
+      await button.scrollIntoViewIfNeeded({ timeout: 4000 });
+      await sleep(300);
+      await button.click({ timeout: 5000 });
+    } catch (e) {
+      return false;
+    }
+    const waitUntil = Date.now() + 6000;
+    while (Date.now() < waitUntil) {
+      await sleep(300);
+      const after = await page.locator(itemSelector).count().catch(() => before);
+      if (after > before) {
+        console.log(`📋 [留痕] 搜狐：已点击「查看更多精彩评论」，评论数 ${before} → ${after}`);
+        return true;
+      }
+    }
+    return false;
+  }
+
   // 头条文章底部只展示预览评论；完整列表位于 side-drawer-btn 打开的抽屉中。
   // 加载更多必须严格限制在可见抽屉内，不能操作预览区。
   if (platform === 'toutiao') {
@@ -507,7 +541,7 @@ async function clickLoadMore(page, platform) {
     const cm = await clickFirstVisible(page, ['a.look-more-comment', '.look-more-comment']);
     if (cm) { anyClicked = true; await sleep(400); continue; }
     const clicked = await clickButtonByText(page, {
-      regex: /查看全部\s*\d*\s*条?\s*评论|查看更多\s*\d*\s*条?\s*评论|加载更多|更多评论|展开回复|展开全部回复|查看全部回复|展开更多|查看更多回复|展开\s*\d*\s*条回复|查看\s*\d*\s*条回复/,
+      regex: /查看全部\s*\d*\s*条?\s*评论|查看更多\s*\d*\s*条?\s*评论|查看更多精彩评论|点击查看更多|加载更多|更多评论|展开回复|展开全部回复|查看全部回复|展开更多|查看更多回复|展开\s*\d*\s*条回复|查看\s*\d*\s*条回复/,
     });
     if (clicked) { anyClicked = true; await sleep(400); } else break;
   }
@@ -1110,6 +1144,14 @@ async function discoverComments(page, platform, accounts, ids, deadline) {
         await commentPage.mouse.move(scrollState.x, scrollState.y).catch(() => {});
         await commentPage.mouse.wheel(0, 700).catch(() => {});
       }
+    } else if (platform === 'sohu') {
+      // 搜狐不需要靠滚轮「滚出更多」：评论是分页的，只有点「查看更多精彩评论」才加载，
+      // 盲目滚动只会把页面越滚越远（用户实测表现就是「一直向下，看不到更多评论」）。
+      // 这里只在还有按钮时把它滚到视野内，交给下一轮 clickLoadMore 真点击。
+      await commentPage.evaluate(() => {
+        const btn = document.querySelector('.more.has-more, #commentList .more');
+        btn?.scrollIntoView({ block: 'center' });
+      }).catch(() => {});
     } else {
       await commentPage.mouse.wheel(0, 900).catch(() => {});
     }
